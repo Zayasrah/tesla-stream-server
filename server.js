@@ -5,6 +5,7 @@ const { WebSocketServer } = require('ws');
 const { spawn } = require('child_process');
 
 const PORT = process.env.PORT || 7860; // 7860 is default for Hugging Face Spaces & standard cloud
+const MAX_CONCURRENT_STREAMS = parseInt(process.env.MAX_STREAMS || '8', 10);
 
 const app = express();
 app.use(cors());
@@ -18,12 +19,13 @@ app.get('/', (req, res) => {
     status: 'online',
     service: 'Tesla In-Motion Canvas Video Stream Server',
     activeStreams,
+    maxStreams: MAX_CONCURRENT_STREAMS,
     instructions: 'Connect via WebSocket: wss://<this-host>/stream?v=<youtubeId>'
   });
 });
 
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', activeStreams, uptime: process.uptime() });
+  res.status(200).json({ status: 'ok', activeStreams, maxStreams: MAX_CONCURRENT_STREAMS, uptime: process.uptime() });
 });
 
 const server = http.createServer(app);
@@ -31,11 +33,24 @@ const wss = new WebSocketServer({ server });
 
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+
+  // Route check
+  if (url.pathname !== '/stream' && url.pathname !== '/') {
+    ws.close(1002, 'Unsupported path: use /stream?v=<youtubeId>');
+    return;
+  }
+
   const videoId = url.searchParams.get('v');
 
   if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
     console.warn('Rejected connection: missing or invalid video ID:', videoId);
     ws.close(1008, 'Missing or invalid 11-char YouTube Video ID');
+    return;
+  }
+
+  if (activeStreams >= MAX_CONCURRENT_STREAMS) {
+    console.warn(`Capacity reached: rejecting stream for ${videoId}`);
+    ws.close(1013, 'Server busy: maximum stream capacity reached');
     return;
   }
 
@@ -51,6 +66,10 @@ wss.on('connection', (ws, req) => {
     isClosed = true;
     activeStreams = Math.max(0, activeStreams - 1);
     console.log(`[Stream Closed] Video: ${videoId} | Active Streams: ${activeStreams}`);
+
+    if (drainTimer) {
+      clearInterval(drainTimer);
+    }
 
     if (ytdlpProcess) {
       try {
@@ -68,6 +87,14 @@ wss.on('connection', (ws, req) => {
       }
       ffmpegProcess = null;
     }
+
+    if (ws.readyState === ws.OPEN) {
+      try {
+        ws.close(1000, 'Stream terminated');
+      } catch (e) {
+        // Ignored
+      }
+    }
   };
 
   ws.on('close', cleanup);
@@ -75,6 +102,8 @@ wss.on('connection', (ws, req) => {
     console.warn(`WebSocket error on ${videoId}:`, err.message);
     cleanup();
   });
+
+  let drainTimer = null;
 
   try {
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
@@ -132,12 +161,27 @@ wss.on('connection', (ws, req) => {
       cleanup();
     });
 
-    // Stream binary MPEG-TS chunks over WebSocket to Tesla browser
+    // Stream binary MPEG-TS chunks over WebSocket with backpressure guard (vehicle cellular buffer)
     ffmpegProcess.stdout.on('data', (chunk) => {
       if (ws.readyState === ws.OPEN) {
+        if (ws.bufferedAmount > 2 * 1024 * 1024) {
+          ffmpegProcess.stdout.pause();
+          return;
+        }
         ws.send(chunk, { binary: true });
       }
     });
+
+    // Buffer drain monitor for cellular networks
+    drainTimer = setInterval(() => {
+      if (isClosed) {
+        clearInterval(drainTimer);
+        return;
+      }
+      if (ws.readyState === ws.OPEN && ws.bufferedAmount < 512 * 1024 && ffmpegProcess && ffmpegProcess.stdout.isPaused()) {
+        ffmpegProcess.stdout.resume();
+      }
+    }, 100);
 
   } catch (err) {
     console.error(`Stream initiation failure [${videoId}]:`, err.message);
