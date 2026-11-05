@@ -102,8 +102,13 @@ wss.on('connection', (ws, req) => {
       '-'
     ]);
 
-    // Pipe yt-dlp output directly to ffmpeg stdin
+    // Pipe yt-dlp output directly to ffmpeg stdin with EPIPE suppression
     ytdlpProcess.stdout.pipe(ffmpegProcess.stdin);
+    ytdlpProcess.stdout.on('error', () => {});
+    ffmpegProcess.stdin.on('error', () => {});
+
+    ytdlpProcess.on('exit', () => cleanup());
+    ffmpegProcess.on('exit', () => cleanup());
 
     ytdlpProcess.stderr.on('data', (d) => {
       // Diagnostic logging (first 100 bytes)
