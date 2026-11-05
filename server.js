@@ -3,13 +3,36 @@ const express = require('express');
 const cors = require('cors');
 const { WebSocketServer } = require('ws');
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 const PORT = process.env.PORT || 7860;
 const MAX_CONCURRENT_STREAMS = parseInt(process.env.MAX_STREAMS || '8', 10);
 
+// Initialize YouTube cookies if provided in environment variable
+const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
+if (process.env.YOUTUBE_COOKIES && process.env.YOUTUBE_COOKIES.trim().length > 10) {
+  try {
+    fs.writeFileSync(COOKIES_PATH, process.env.YOUTUBE_COOKIES.trim(), 'utf8');
+    console.log('✅ Loaded YouTube authentication cookies from environment variable!');
+  } catch (err) {
+    console.error('Failed to write cookies.txt:', err.message);
+  }
+}
+
+// Direct CDN Stream Map for 100% Unblockable 24/7 Live Broadcasts
+const DIRECT_STREAM_MAP = {
+  // Makkah Live 24/7 (Saudi Quran TV official Akamai CDN)
+  'eC4LfEVxvKg': 'https://cdn-globecast.akamaized.net/live/eds/saudi_quran/hls_roku/index.m3u8',
+  // Madinah Live 24/7 (Saudi Sunnah TV official Akamai CDN)
+  'Rs7St51oDDc': 'https://cdn-globecast.akamaized.net/live/eds/saudi_sunnah/hls_roku/index.m3u8',
+  // Test stream identifier
+  'test': 'https://cdn-globecast.akamaized.net/live/eds/saudi_quran/hls_roku/index.m3u8'
+};
+
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
 let activeStreams = 0;
 
@@ -18,11 +41,41 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'Tesla In-Motion Canvas Video Stream Server',
-    version: '2.0.0-hardened',
+    version: '4.1.0-cookie-api',
+    hasCookies: fs.existsSync(COOKIES_PATH),
     activeStreams,
     maxStreams: MAX_CONCURRENT_STREAMS,
     instructions: 'Connect via WebSocket: wss://<this-host>/stream?v=<youtubeId>'
   });
+});
+
+
+// Endpoint to save YouTube cookies directly from the web app UI
+app.post('/cookies', (req, res) => {
+  const { cookies } = req.body;
+  if (!cookies || typeof cookies !== 'string' || cookies.trim().length < 10) {
+    return res.status(400).json({ error: 'Invalid cookie content' });
+  }
+  try {
+    fs.writeFileSync(COOKIES_PATH, cookies.trim(), 'utf8');
+    console.log('✅ Cookies updated via /cookies API endpoint!');
+    res.json({ status: 'ok', message: 'Cookies saved successfully', hasCookies: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to write cookies: ' + err.message });
+  }
+});
+
+// Endpoint to clear YouTube cookies
+app.delete('/cookies', (req, res) => {
+  try {
+    if (fs.existsSync(COOKIES_PATH)) {
+      fs.unlinkSync(COOKIES_PATH);
+      console.log('🗑️ Cookies cleared via DELETE /cookies endpoint');
+    }
+    res.json({ status: 'ok', message: 'Cookies cleared successfully', hasCookies: false });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to clear cookies: ' + err.message });
+  }
 });
 
 app.get('/health', (req, res) => {
@@ -30,28 +83,59 @@ app.get('/health', (req, res) => {
     status: 'ok',
     activeStreams,
     maxStreams: MAX_CONCURRENT_STREAMS,
+    hasCookies: fs.existsSync(COOKIES_PATH),
     uptime: process.uptime(),
-    version: '2.0.0-hardened'
+    version: '4.1.0-cookie-api'
   });
 });
 
-// Live diagnostic endpoint for automated testing & verification
-app.get('/diag', (req, res) => {
-  const videoId = req.query.v || 'gCNeDWCI0vo';
-  if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
-    return res.status(400).json({ error: 'Invalid 11-char video ID' });
+// Diagnostic endpoint
+app.get('/diag', async (req, res) => {
+  const videoId = req.query.v || 'eC4LfEVxvKg';
+  const start = Date.now();
+  const results = {};
+
+  // Check if it's a direct CDN stream
+  if (DIRECT_STREAM_MAP[videoId]) {
+    try {
+      const cdnRes = await fetch(DIRECT_STREAM_MAP[videoId], { method: 'HEAD', signal: AbortSignal.timeout(4000) });
+      return res.json({
+        status: 'success',
+        type: 'direct_cdn',
+        videoId,
+        cdnStatus: `HTTP ${cdnRes.status}`,
+        url: DIRECT_STREAM_MAP[videoId],
+        elapsedMs: Date.now() - start
+      });
+    } catch (e) {
+      return res.status(500).json({ error: 'Direct CDN probe failed: ' + e.message });
+    }
   }
 
+  // Otherwise test yt-dlp
   const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
-  const start = Date.now();
-
-  const ytdlp = spawn('yt-dlp', [
-    '--extractor-args', 'youtube:player_client=android,ios',
+  const ytdlpArgs = [
+    '-v',
+    '-4',
+    '--socket-timeout', '10',
+    '--no-cache-dir',
     '--no-warnings',
-    '-f', '18/b[ext=mp4]/best[ext=mp4]/b/best',
+    '-f', '18/b[ext=mp4]/best',
     '-g',
     youtubeUrl
-  ]);
+  ];
+
+  if (fs.existsSync(COOKIES_PATH)) {
+    ytdlpArgs.splice(1, 0, '--cookies', COOKIES_PATH);
+  }
+
+  const ytdlp = spawn('yt-dlp', ytdlpArgs, {
+    env: {
+      ...process.env,
+      PATH: '/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
+      PYTHONUNBUFFERED: '1'
+    }
+  });
 
   let stdout = '';
   let stderr = '';
@@ -62,24 +146,24 @@ app.get('/diag', (req, res) => {
   const timer = setTimeout(() => {
     try { ytdlp.kill('SIGKILL'); } catch (e) {}
     res.status(504).json({
-      error: 'Timeout after 20s',
-      stdout: stdout.slice(0, 500),
-      stderr: stderr.slice(-1000),
+      error: 'Timeout after 30s',
+      stdout: stdout.slice(0, 1000),
+      stderr: stderr.slice(-1500),
       elapsedMs: Date.now() - start
     });
-  }, 20000);
+  }, 30000);
 
   ytdlp.on('close', (code) => {
     clearTimeout(timer);
     const urls = stdout.trim().split('\n').filter((u) => u.startsWith('http'));
     res.json({
       status: code === 0 && urls.length > 0 ? 'success' : 'failed',
-      videoId,
       exitCode: code,
+      hasCookies: fs.existsSync(COOKIES_PATH),
       elapsedMs: Date.now() - start,
       urlCount: urls.length,
       sampleUrl: urls.length > 0 ? urls[0].substring(0, 80) + '...' : null,
-      stderr: stderr.slice(-1000)
+      stderr: stderr.slice(-1500)
     });
   });
 
@@ -103,9 +187,9 @@ wss.on('connection', (ws, req) => {
 
   const videoId = url.searchParams.get('v');
 
-  if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+  if (!videoId || !/^[a-zA-Z0-9_-]{1,32}$/.test(videoId)) {
     console.warn('Rejected connection: missing or invalid video ID:', videoId);
-    ws.close(1008, 'Missing or invalid 11-char YouTube Video ID');
+    ws.close(1008, 'Missing or invalid video ID');
     return;
   }
 
@@ -135,28 +219,16 @@ wss.on('connection', (ws, req) => {
     }
 
     if (ytdlpProcess) {
-      try {
-        ytdlpProcess.kill('SIGKILL');
-      } catch (e) {
-        // Ignored
-      }
+      try { ytdlpProcess.kill('SIGKILL'); } catch (e) {}
       ytdlpProcess = null;
     }
     if (ffmpegProcess) {
-      try {
-        ffmpegProcess.kill('SIGKILL');
-      } catch (e) {
-        // Ignored
-      }
+      try { ffmpegProcess.kill('SIGKILL'); } catch (e) {}
       ffmpegProcess = null;
     }
 
     if (ws.readyState === ws.OPEN) {
-      try {
-        ws.close(1000, 'Stream terminated');
-      } catch (e) {
-        // Ignored
-      }
+      try { ws.close(1000, 'Stream terminated'); } catch (e) {}
     }
   };
 
@@ -167,9 +239,7 @@ wss.on('connection', (ws, req) => {
   });
 
   try {
-    const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-    // Optimized FFmpeg transcode profile for low-spec cloud containers (640x360 @ 24fps)
+    // Optimized FFmpeg transcode profile for real-time 24fps MPEG-1 delivery to Tesla Canvas
     const startFfmpeg = (inputArgs) => {
       ffmpegProcess = spawn('ffmpeg', [
         '-re',
@@ -212,15 +282,37 @@ wss.on('connection', (ws, req) => {
       });
     };
 
-    // Stage 1: Resolve direct stream URLs with yt-dlp using mobile client emulation
-    let urlBuffer = '';
-    ytdlpProcess = spawn('yt-dlp', [
-      '--extractor-args', 'youtube:player_client=android,ios',
+    // Fast-path: If videoId is a known direct CDN HLS broadcast (e.g. Makkah or Madinah Live)
+    if (DIRECT_STREAM_MAP[videoId]) {
+      console.log(`[Direct CDN Fast-Path] Routing ${videoId} to official Akamai stream: ${DIRECT_STREAM_MAP[videoId]}`);
+      startFfmpeg(['-i', DIRECT_STREAM_MAP[videoId]]);
+      return;
+    }
+
+    // Standard YouTube path using yt-dlp
+    const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const ytdlpArgs = [
+      '-4',
+      '--socket-timeout', '10',
+      '--no-cache-dir',
       '--no-warnings',
       '-f', '18/b[ext=mp4]/best[ext=mp4]/b/best',
       '-g',
       youtubeUrl
-    ]);
+    ];
+
+    if (fs.existsSync(COOKIES_PATH)) {
+      ytdlpArgs.splice(1, 0, '--cookies', COOKIES_PATH);
+    }
+
+    let urlBuffer = '';
+    ytdlpProcess = spawn('yt-dlp', ytdlpArgs, {
+      env: {
+        ...process.env,
+        PATH: '/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
+        PYTHONUNBUFFERED: '1'
+      }
+    });
 
     ytdlpProcess.stdout.on('data', (d) => {
       urlBuffer += d.toString();
@@ -238,21 +330,33 @@ wss.on('connection', (ws, req) => {
       const rawUrls = urlBuffer.trim().split('\n').filter((u) => u.startsWith('http'));
 
       if (code === 0 && rawUrls.length > 0) {
-        console.log(`[Stream URL Resolved for ${videoId}] Stream count: ${rawUrls.length}. Starting direct HTTP transcode...`);
+        console.log(`[Stream URL Resolved for ${videoId}] Starting direct HTTP transcode...`);
         const inputArgs = rawUrls.length >= 2
           ? ['-i', rawUrls[0], '-i', rawUrls[1]]
           : ['-i', rawUrls[0]];
         startFfmpeg(inputArgs);
       } else {
         console.warn(`[Stream Pipe Fallback for ${videoId}] Falling back to progressive MP4 stdout pipe...`);
-        // Use format 18 (pre-merged 360p progressive MP4) so stdout pipe NEVER requires seeking
-        ytdlpProcess = spawn('yt-dlp', [
-          '--extractor-args', 'youtube:player_client=android,ios',
+        const pipeArgs = [
+          '-4',
+          '--socket-timeout', '10',
+          '--no-cache-dir',
           '--no-warnings',
           '-f', '18/best[ext=mp4]/best',
           '-o', '-',
           youtubeUrl
-        ]);
+        ];
+        if (fs.existsSync(COOKIES_PATH)) {
+          pipeArgs.splice(1, 0, '--cookies', COOKIES_PATH);
+        }
+
+        ytdlpProcess = spawn('yt-dlp', pipeArgs, {
+          env: {
+            ...process.env,
+            PATH: '/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
+            PYTHONUNBUFFERED: '1'
+          }
+        });
 
         startFfmpeg(['-i', 'pipe:0']);
         ytdlpProcess.stdout.pipe(ffmpegProcess.stdin);
@@ -285,6 +389,6 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Tesla Drive Stream Server v2.0.0 listening on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Tesla Drive Stream Server v4.1.0 listening on http://0.0.0.0:${PORT}`);
   console.log(`📡 WebSocket ready at ws://0.0.0.0:${PORT}/stream?v=<youtubeId>`);
 });

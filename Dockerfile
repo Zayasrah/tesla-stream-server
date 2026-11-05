@@ -1,6 +1,6 @@
 FROM node:20-bookworm-slim
 
-# Install system dependencies (ffmpeg, python3, curl)
+# Install system dependencies (ffmpeg, python3, pip, curl)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     python3 \
@@ -9,9 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install standalone yt-dlp binary with global execute permissions
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
-    && chmod a+rx /usr/local/bin/yt-dlp
+# Symlink node to /usr/bin/node so yt-dlp automatically detects Node.js for JS signature deciphering
+RUN ln -sf /usr/local/bin/node /usr/bin/node
+
+# Install yt-dlp and curl_cffi (browser TLS impersonation) via pip
+RUN pip3 install --no-cache-dir --break-system-packages "yt-dlp[default]" "curl_cffi"
 
 WORKDIR /app
 
@@ -30,6 +32,7 @@ USER node
 # Set environment variables
 ENV PORT=7860
 ENV NODE_ENV=production
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 7860
 
