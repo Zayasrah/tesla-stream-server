@@ -4,7 +4,7 @@ const cors = require('cors');
 const { WebSocketServer } = require('ws');
 const { spawn } = require('child_process');
 
-const PORT = process.env.PORT || 7860; // 7860 is default for Hugging Face Spaces & standard cloud
+const PORT = process.env.PORT || 7860;
 const MAX_CONCURRENT_STREAMS = parseInt(process.env.MAX_STREAMS || '8', 10);
 
 const app = express();
@@ -60,6 +60,7 @@ wss.on('connection', (ws, req) => {
   let ytdlpProcess = null;
   let ffmpegProcess = null;
   let isClosed = false;
+  let drainTimer = null;
 
   const cleanup = () => {
     if (isClosed) return;
@@ -103,73 +104,84 @@ wss.on('connection', (ws, req) => {
     cleanup();
   });
 
-  let drainTimer = null;
-
   try {
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // 1. Spawn yt-dlp to extract the raw video/audio stream
+    const startFfmpeg = (inputArgs) => {
+      ffmpegProcess = spawn('ffmpeg', [
+        ...inputArgs,
+        '-f', 'mpegts',
+        '-codec:v', 'mpeg1video',
+        '-s', '1280x720',
+        '-b:v', '1500k',
+        '-r', '30',
+        '-bf', '0',
+        '-codec:a', 'mp2',
+        '-ar', '44100',
+        '-ac', '2',
+        '-b:a', '128k',
+        '-'
+      ]);
+
+      ffmpegProcess.on('exit', () => cleanup());
+      ffmpegProcess.on('error', (err) => {
+        console.error(`ffmpeg spawn error [${videoId}]:`, err.message);
+        cleanup();
+      });
+
+      ffmpegProcess.stderr.on('data', () => {});
+
+      // Stream binary MPEG-TS chunks over WebSocket with backpressure guard
+      ffmpegProcess.stdout.on('data', (chunk) => {
+        if (ws.readyState === ws.OPEN) {
+          if (ws.bufferedAmount > 2 * 1024 * 1024) {
+            ffmpegProcess.stdout.pause();
+            return;
+          }
+          ws.send(chunk, { binary: true });
+        }
+      });
+    };
+
+    // First attempt: extract direct streaming URL with yt-dlp -g (Fastest, seekable HTTP)
+    let urlBuffer = '';
     ytdlpProcess = spawn('yt-dlp', [
-      '-f', 'best[height<=720]/best',
-      '-o', '-',
+      '-f', 'b[ext=mp4]/best[ext=mp4]/b/18/22/best',
+      '-g',
       youtubeUrl
     ]);
 
-    // 2. Spawn ffmpeg to transcode into MPEG-1 Video + MP2 Audio for JSMpeg
-    ffmpegProcess = spawn('ffmpeg', [
-      '-i', 'pipe:0',
-      '-f', 'mpegts',
-      '-codec:v', 'mpeg1video',
-      '-s', '1280x720',
-      '-b:v', '1500k',
-      '-r', '30',
-      '-bf', '0',
-      '-codec:a', 'mp2',
-      '-ar', '44100',
-      '-ac', '2',
-      '-b:a', '128k',
-      '-'
-    ]);
-
-    // Pipe yt-dlp output directly to ffmpeg stdin with EPIPE suppression
-    ytdlpProcess.stdout.pipe(ffmpegProcess.stdin);
-    ytdlpProcess.stdout.on('error', () => {});
-    ffmpegProcess.stdin.on('error', () => {});
-
-    ytdlpProcess.on('exit', () => cleanup());
-    ffmpegProcess.on('exit', () => cleanup());
-
-    ytdlpProcess.stderr.on('data', (d) => {
-      // Diagnostic logging (first 100 bytes)
-      const msg = d.toString();
-      if (msg.includes('ERROR:')) {
-        console.error(`yt-dlp [${videoId}] error:`, msg.trim());
-      }
+    ytdlpProcess.stdout.on('data', (d) => {
+      urlBuffer += d.toString();
     });
 
-    ffmpegProcess.stderr.on('data', (d) => {
-      // ffmpeg diagnostic logging
+    ytdlpProcess.on('close', (code) => {
+      if (isClosed) return;
+      const rawUrls = urlBuffer.trim().split('\n').filter(u => u.startsWith('http'));
+      if (code === 0 && rawUrls.length > 0) {
+        console.log(`[Stream URL Resolved for ${videoId}] Starting direct ffmpeg HTTP transcode...`);
+        const inputArgs = rawUrls.length >= 2
+          ? ['-re', '-i', rawUrls[0], '-i', rawUrls[1]]
+          : ['-re', '-i', rawUrls[0]];
+        startFfmpeg(inputArgs);
+      } else {
+        console.warn(`[Stream Pipe Fallback for ${videoId}] Falling back to piped stdin...`);
+        ytdlpProcess = spawn('yt-dlp', [
+          '-f', 'b[ext=mp4]/best[ext=mp4]/b/18/22',
+          '-o', '-',
+          youtubeUrl
+        ]);
+        startFfmpeg(['-i', 'pipe:0']);
+        ytdlpProcess.stdout.pipe(ffmpegProcess.stdin);
+        ytdlpProcess.stdout.on('error', () => {});
+        ffmpegProcess.stdin.on('error', () => {});
+        ytdlpProcess.on('exit', () => cleanup());
+      }
     });
 
     ytdlpProcess.on('error', (err) => {
       console.error(`yt-dlp spawn error [${videoId}]:`, err.message);
       cleanup();
-    });
-
-    ffmpegProcess.on('error', (err) => {
-      console.error(`ffmpeg spawn error [${videoId}]:`, err.message);
-      cleanup();
-    });
-
-    // Stream binary MPEG-TS chunks over WebSocket with backpressure guard (vehicle cellular buffer)
-    ffmpegProcess.stdout.on('data', (chunk) => {
-      if (ws.readyState === ws.OPEN) {
-        if (ws.bufferedAmount > 2 * 1024 * 1024) {
-          ffmpegProcess.stdout.pause();
-          return;
-        }
-        ws.send(chunk, { binary: true });
-      }
     });
 
     // Buffer drain monitor for cellular networks
