@@ -13,22 +13,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
     && chmod a+rx /usr/local/bin/yt-dlp
 
-# Set up non-root user for Hugging Face Spaces (UID 1000)
-RUN useradd -m -u 1000 user
-USER user
-ENV HOME=/home/user \
-    PATH=/home/user/.local/bin:$PATH
-
 WORKDIR /app
 
-# Copy dependency files with user ownership and install
-COPY --chown=user package.json ./
+# Copy dependency files and install
+COPY package.json ./
 RUN npm install --production
 
-# Copy server code with user ownership
-COPY --chown=user server.js ./
+# Copy server code
+COPY server.js ./
+COPY render.yaml ./
 
-# Set environment variables (7860 is default port for Hugging Face Spaces)
+# Assign ownership to the built-in 'node' user (UID 1000 in official node image)
+RUN chown -R node:node /app
+USER node
+
+# Set environment variables
 ENV PORT=7860
 ENV NODE_ENV=production
 
