@@ -30,6 +30,33 @@ const DIRECT_STREAM_MAP = {
   'test': 'https://cdn-globecast.akamaized.net/live/eds/saudi_quran/hls_roku/index.m3u8'
 };
 
+// Launch BotGuard Proof-of-Origin Token (POT) server on port 4416
+let potServerProcess = null;
+const POT_SCRIPT = '/opt/bgutil-provider/build/main.js';
+if (fs.existsSync(POT_SCRIPT)) {
+  try {
+    console.log('🚀 Spawning BotGuard Proof-of-Origin Token daemon on 127.0.0.1:4416...');
+    potServerProcess = spawn('node', [POT_SCRIPT, '--host', '127.0.0.1', '--port', '4416'], {
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    potServerProcess.stdout.on('data', (d) => {
+      const msg = d.toString().trim();
+      if (msg) console.log('[POT Daemon]', msg);
+    });
+    potServerProcess.stderr.on('data', (d) => {
+      const msg = d.toString().trim();
+      if (msg) console.warn('[POT Daemon Err]', msg);
+    });
+    potServerProcess.on('exit', (code) => {
+      console.warn(`[POT Daemon] Exited with code ${code}`);
+    });
+  } catch (err) {
+    console.error('Failed to spawn POT provider:', err.message);
+  }
+} else {
+  console.log('ℹ️ POT provider script not found at', POT_SCRIPT, '(running in fallback mode)');
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
@@ -41,8 +68,9 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'Tesla In-Motion Canvas Video Stream Server',
-    version: '4.1.0-cookie-api',
+    version: '4.2.0-auto-pot-provider',
     hasCookies: fs.existsSync(COOKIES_PATH),
+    hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     activeStreams,
     maxStreams: MAX_CONCURRENT_STREAMS,
     instructions: 'Connect via WebSocket: wss://<this-host>/stream?v=<youtubeId>'
@@ -84,8 +112,9 @@ app.get('/health', (req, res) => {
     activeStreams,
     maxStreams: MAX_CONCURRENT_STREAMS,
     hasCookies: fs.existsSync(COOKIES_PATH),
+    hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     uptime: process.uptime(),
-    version: '4.1.0-cookie-api'
+    version: '4.2.0-auto-pot-provider'
   });
 });
 
@@ -114,12 +143,16 @@ app.get('/diag', async (req, res) => {
 
   // Otherwise test yt-dlp
   const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const potArgs = fs.existsSync(POT_SCRIPT)
+    ? ['--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416']
+    : [];
   const ytdlpArgs = [
     '-v',
     '-4',
     '--socket-timeout', '10',
     '--no-cache-dir',
     '--no-warnings',
+    ...potArgs,
     '-f', '18/b[ext=mp4]/best',
     '-g',
     youtubeUrl
@@ -291,11 +324,15 @@ wss.on('connection', (ws, req) => {
 
     // Standard YouTube path using yt-dlp
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const potArgs = fs.existsSync(POT_SCRIPT)
+      ? ['--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416']
+      : [];
     const ytdlpArgs = [
       '-4',
       '--socket-timeout', '10',
       '--no-cache-dir',
       '--no-warnings',
+      ...potArgs,
       '-f', '18/b[ext=mp4]/best[ext=mp4]/b/best',
       '-g',
       youtubeUrl
@@ -342,6 +379,7 @@ wss.on('connection', (ws, req) => {
           '--socket-timeout', '10',
           '--no-cache-dir',
           '--no-warnings',
+          ...potArgs,
           '-f', '18/best[ext=mp4]/best',
           '-o', '-',
           youtubeUrl
@@ -389,6 +427,20 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Tesla Drive Stream Server v4.1.0 listening on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Tesla Drive Stream Server v4.2.0 (Automated BotGuard POT Provider) listening on http://0.0.0.0:${PORT}`);
   console.log(`📡 WebSocket ready at ws://0.0.0.0:${PORT}/stream?v=<youtubeId>`);
 });
+
+// Process signal handlers for clean container shutdown
+const gracefulShutdown = () => {
+  console.log('Shutting down Tesla Stream Server...');
+  if (potServerProcess) {
+    try {
+      potServerProcess.kill('SIGTERM');
+    } catch (e) {}
+  }
+  process.exit(0);
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);

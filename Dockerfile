@@ -12,8 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Symlink node to /usr/bin/node so yt-dlp automatically detects Node.js for JS signature deciphering
 RUN ln -sf /usr/local/bin/node /usr/bin/node
 
-# Install yt-dlp and curl_cffi (browser TLS impersonation) via pip
-RUN pip3 install --no-cache-dir --break-system-packages "yt-dlp[default]" "curl_cffi"
+# Install yt-dlp, curl_cffi, and bgutil-ytdlp-pot-provider via pip
+RUN pip3 install --no-cache-dir --break-system-packages "yt-dlp[default]" "curl_cffi" "bgutil-ytdlp-pot-provider"
+
+# Copy prebuilt BotGuard Proof-of-Origin Token provider server from official Docker Hub image
+COPY --from=brainicism/bgutil-ytdlp-pot-provider:latest /app /opt/bgutil-provider
 
 WORKDIR /app
 
@@ -26,7 +29,7 @@ COPY server.js ./
 COPY render.yaml ./
 
 # Assign ownership to the built-in 'node' user (UID 1000 in official node image)
-RUN chown -R node:node /app
+RUN chown -R node:node /app /opt/bgutil-provider
 USER node
 
 # Set environment variables
