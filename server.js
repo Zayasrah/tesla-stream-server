@@ -144,7 +144,10 @@ app.get('/diag', async (req, res) => {
   // Otherwise test yt-dlp
   const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const potArgs = fs.existsSync(POT_SCRIPT)
-    ? ['--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416']
+    ? [
+        '--extractor-args', 'youtube:player_client=web',
+        '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
+      ]
     : [];
   const ytdlpArgs = [
     '-v',
@@ -162,7 +165,7 @@ app.get('/diag', async (req, res) => {
     ytdlpArgs.splice(1, 0, '--cookies', COOKIES_PATH);
   }
 
-  const ytdlp = spawn('yt-dlp', ytdlpArgs, {
+  const ytdlp = spawn('python3', ['-m', 'yt_dlp', ...ytdlpArgs], {
     env: {
       ...process.env,
       PATH: '/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
@@ -325,7 +328,10 @@ wss.on('connection', (ws, req) => {
     // Standard YouTube path using yt-dlp
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const potArgs = fs.existsSync(POT_SCRIPT)
-      ? ['--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416']
+      ? [
+          '--extractor-args', 'youtube:player_client=web',
+          '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
+        ]
       : [];
     const ytdlpArgs = [
       '-4',
@@ -343,7 +349,7 @@ wss.on('connection', (ws, req) => {
     }
 
     let urlBuffer = '';
-    ytdlpProcess = spawn('yt-dlp', ytdlpArgs, {
+    ytdlpProcess = spawn('python3', ['-m', 'yt_dlp', ...ytdlpArgs], {
       env: {
         ...process.env,
         PATH: '/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
@@ -388,7 +394,7 @@ wss.on('connection', (ws, req) => {
           pipeArgs.splice(1, 0, '--cookies', COOKIES_PATH);
         }
 
-        ytdlpProcess = spawn('yt-dlp', pipeArgs, {
+        ytdlpProcess = spawn('python3', ['-m', 'yt_dlp', ...pipeArgs], {
           env: {
             ...process.env,
             PATH: '/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
