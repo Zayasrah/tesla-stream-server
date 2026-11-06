@@ -139,11 +139,29 @@ app.delete('/cookies', (req, res) => {
 });
 
 app.get('/health', (req, res) => {
+  const cookieExists = fs.existsSync(COOKIES_PATH);
+  let cookieStats = null;
+  if (cookieExists) {
+    try {
+      const content = fs.readFileSync(COOKIES_PATH, 'utf8');
+      const lines = content.split('\n');
+      cookieStats = {
+        bytes: Buffer.byteLength(content),
+        totalLines: lines.length,
+        validLines: lines.filter((l) => l.trim() && !l.startsWith('#')).length,
+        firstLine: lines[0] ? lines[0].substring(0, 60) : ''
+      };
+    } catch (e) {
+      cookieStats = { error: e.message };
+    }
+  }
+
   res.status(200).json({
     status: 'ok',
     activeStreams,
     maxStreams: MAX_CONCURRENT_STREAMS,
-    hasCookies: fs.existsSync(COOKIES_PATH),
+    hasCookies: cookieExists,
+    cookieStats,
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     uptime: process.uptime(),
     version: '5.0.0-hd-buffer-boost'
