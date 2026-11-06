@@ -13,8 +13,14 @@ const MAX_CONCURRENT_STREAMS = parseInt(process.env.MAX_STREAMS || '8', 10);
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
 if (process.env.YOUTUBE_COOKIES && process.env.YOUTUBE_COOKIES.trim().length > 10) {
   try {
-    fs.writeFileSync(COOKIES_PATH, process.env.YOUTUBE_COOKIES.trim(), 'utf8');
-    console.log('✅ Loaded YouTube authentication cookies from environment variable!');
+    let raw = process.env.YOUTUBE_COOKIES.trim();
+    // Handle literal '\n' escaping often produced by cloud environment variable fields
+    if (raw.includes('\\n')) {
+      raw = raw.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+    }
+    fs.writeFileSync(COOKIES_PATH, raw, 'utf8');
+    const lines = raw.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length;
+    console.log(`✅ Loaded YouTube authentication cookies (${lines} active cookie lines)!`);
   } catch (err) {
     console.error('Failed to write cookies.txt:', err.message);
   }
@@ -173,6 +179,10 @@ app.get('/diag', async (req, res) => {
 
   // Otherwise test yt-dlp
   const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const hasCookies = fs.existsSync(COOKIES_PATH);
+  const clientArg = hasCookies
+    ? 'youtube:player_client=web'
+    : 'youtube:player_client=android,ios,mweb,web';
   const potArgs = fs.existsSync(POT_SCRIPT)
     ? [
         '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
@@ -184,14 +194,14 @@ app.get('/diag', async (req, res) => {
     '--socket-timeout', '10',
     '--no-cache-dir',
     '--no-warnings',
-    '--extractor-args', 'youtube:player_client=android,ios,mweb,web',
+    '--extractor-args', clientArg,
     ...potArgs,
     '-f', '18/b[ext=mp4]/best',
     '-g',
     youtubeUrl
   ];
 
-  if (fs.existsSync(COOKIES_PATH)) {
+  if (hasCookies) {
     ytdlpArgs.splice(1, 0, '--cookies', COOKIES_PATH);
   }
 
@@ -357,8 +367,12 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
-    // Standard YouTube path using yt-dlp with mobile client cascade
+    // Standard YouTube path using yt-dlp
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const hasCookies = fs.existsSync(COOKIES_PATH);
+    const clientArg = hasCookies
+      ? 'youtube:player_client=web'
+      : 'youtube:player_client=android,ios,mweb,web';
     const potArgs = fs.existsSync(POT_SCRIPT)
       ? [
           '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
@@ -369,14 +383,14 @@ wss.on('connection', (ws, req) => {
       '--socket-timeout', '10',
       '--no-cache-dir',
       '--no-warnings',
-      '--extractor-args', 'youtube:player_client=android,ios,mweb,web',
+      '--extractor-args', clientArg,
       ...potArgs,
       '-f', '18/b[ext=mp4]/best[ext=mp4]/b/best',
       '-g',
       youtubeUrl
     ];
 
-    if (fs.existsSync(COOKIES_PATH)) {
+    if (hasCookies) {
       ytdlpArgs.splice(1, 0, '--cookies', COOKIES_PATH);
     }
 
@@ -417,13 +431,13 @@ wss.on('connection', (ws, req) => {
           '--socket-timeout', '10',
           '--no-cache-dir',
           '--no-warnings',
-          '--extractor-args', 'youtube:player_client=android,ios,mweb,web',
+          '--extractor-args', clientArg,
           ...potArgs,
           '-f', '18/best[ext=mp4]/best',
           '-o', '-',
           youtubeUrl
         ];
-        if (fs.existsSync(COOKIES_PATH)) {
+        if (hasCookies) {
           pipeArgs.splice(1, 0, '--cookies', COOKIES_PATH);
         }
 
