@@ -57,6 +57,31 @@ if (fs.existsSync(POT_SCRIPT)) {
   console.log('ℹ️ POT provider script not found at', POT_SCRIPT, '(running in fallback mode)');
 }
 
+// Multi-tier Quality Profiles for High-Definition and Anti-Stutter In-Motion Playback
+const QUALITY_PROFILES = {
+  '720p': {
+    resolution: '1280x720',
+    videoBitrate: '1800k',
+    maxRate: '2200k',
+    bufSize: '3600k',
+    fps: '30'
+  },
+  '480p': {
+    resolution: '854x480',
+    videoBitrate: '1100k',
+    maxRate: '1400k',
+    bufSize: '2200k',
+    fps: '25'
+  },
+  '360p': {
+    resolution: '640x360',
+    videoBitrate: '600k',
+    maxRate: '850k',
+    bufSize: '1200k',
+    fps: '24'
+  }
+};
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
@@ -68,12 +93,13 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'Tesla In-Motion Canvas Video Stream Server',
-    version: '4.2.0-auto-pot-provider',
+    version: '5.0.0-hd-buffer-boost',
     hasCookies: fs.existsSync(COOKIES_PATH),
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     activeStreams,
     maxStreams: MAX_CONCURRENT_STREAMS,
-    instructions: 'Connect via WebSocket: wss://<this-host>/stream?v=<youtubeId>'
+    supportedQualities: Object.keys(QUALITY_PROFILES),
+    instructions: 'Connect via WebSocket: wss://<this-host>/stream?v=<youtubeId>&q=720p'
   });
 });
 
@@ -114,13 +140,15 @@ app.get('/health', (req, res) => {
     hasCookies: fs.existsSync(COOKIES_PATH),
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     uptime: process.uptime(),
-    version: '4.2.0-auto-pot-provider'
+    version: '5.0.0-hd-buffer-boost'
   });
 });
 
 // Diagnostic endpoint
 app.get('/diag', async (req, res) => {
   const videoId = req.query.v || 'eC4LfEVxvKg';
+  const requestedQuality = req.query.q || '720p';
+  const profile = QUALITY_PROFILES[requestedQuality] || QUALITY_PROFILES['720p'];
   const start = Date.now();
   const results = {};
 
@@ -132,6 +160,8 @@ app.get('/diag', async (req, res) => {
         status: 'success',
         type: 'direct_cdn',
         videoId,
+        quality: requestedQuality,
+        profile,
         cdnStatus: `HTTP ${cdnRes.status}`,
         url: DIRECT_STREAM_MAP[videoId],
         elapsedMs: Date.now() - start
@@ -145,7 +175,6 @@ app.get('/diag', async (req, res) => {
   const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const potArgs = fs.existsSync(POT_SCRIPT)
     ? [
-        '--extractor-args', 'youtube:player_client=web',
         '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
       ]
     : [];
@@ -155,6 +184,7 @@ app.get('/diag', async (req, res) => {
     '--socket-timeout', '10',
     '--no-cache-dir',
     '--no-warnings',
+    '--extractor-args', 'youtube:player_client=android,ios,mweb,web',
     ...potArgs,
     '-f', '18/b[ext=mp4]/best',
     '-g',
@@ -236,7 +266,9 @@ wss.on('connection', (ws, req) => {
   }
 
   activeStreams++;
-  console.log(`[Stream Started] Video: ${videoId} | Active Streams: ${activeStreams}`);
+  const requestedQuality = url.searchParams.get('q') || url.searchParams.get('quality') || '720p';
+  const profile = QUALITY_PROFILES[requestedQuality] || QUALITY_PROFILES['720p'];
+  console.log(`[Stream Started] Video: ${videoId} | Quality: ${requestedQuality} (${profile.resolution} @ ${profile.videoBitrate}) | Active Streams: ${activeStreams}`);
 
   let ytdlpProcess = null;
   let ffmpegProcess = null;
@@ -275,25 +307,25 @@ wss.on('connection', (ws, req) => {
   });
 
   try {
-    // Optimized FFmpeg transcode profile for real-time 24fps MPEG-1 delivery to Tesla Canvas
+    // High-definition MPEG-1 transcode profile optimized for Tesla Canvas & cellular buffer cushion
+    // Note: '-re' is omitted intentionally so FFmpeg bursts 3-5 seconds of pre-buffer data to the car
     const startFfmpeg = (inputArgs) => {
       ffmpegProcess = spawn('ffmpeg', [
-        '-re',
         ...inputArgs,
         '-f', 'mpegts',
         '-codec:v', 'mpeg1video',
-        '-s', '640x360',
-        '-b:v', '600k',
-        '-maxrate', '850k',
-        '-bufsize', '1200k',
-        '-r', '24',
+        '-s', profile.resolution,
+        '-b:v', profile.videoBitrate,
+        '-maxrate', profile.maxRate,
+        '-bufsize', profile.bufSize,
+        '-r', profile.fps,
         '-bf', '0',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-codec:a', 'mp2',
-        '-ar', '44100',
+        '-ar', '48000',
         '-ac', '2',
-        '-b:a', '96k',
+        '-b:a', '128k',
         '-'
       ]);
 
@@ -308,7 +340,7 @@ wss.on('connection', (ws, req) => {
       // Stream binary MPEG-TS chunks over WebSocket with backpressure guard
       ffmpegProcess.stdout.on('data', (chunk) => {
         if (ws.readyState === ws.OPEN) {
-          if (ws.bufferedAmount > 2 * 1024 * 1024) {
+          if (ws.bufferedAmount > 3 * 1024 * 1024) {
             ffmpegProcess.stdout.pause();
             return;
           }
@@ -325,11 +357,10 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
-    // Standard YouTube path using yt-dlp
+    // Standard YouTube path using yt-dlp with mobile client cascade
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const potArgs = fs.existsSync(POT_SCRIPT)
       ? [
-          '--extractor-args', 'youtube:player_client=web',
           '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
         ]
       : [];
@@ -338,6 +369,7 @@ wss.on('connection', (ws, req) => {
       '--socket-timeout', '10',
       '--no-cache-dir',
       '--no-warnings',
+      '--extractor-args', 'youtube:player_client=android,ios,mweb,web',
       ...potArgs,
       '-f', '18/b[ext=mp4]/best[ext=mp4]/b/best',
       '-g',
@@ -385,6 +417,7 @@ wss.on('connection', (ws, req) => {
           '--socket-timeout', '10',
           '--no-cache-dir',
           '--no-warnings',
+          '--extractor-args', 'youtube:player_client=android,ios,mweb,web',
           ...potArgs,
           '-f', '18/best[ext=mp4]/best',
           '-o', '-',
