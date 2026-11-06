@@ -70,7 +70,8 @@ const QUALITY_PROFILES = {
     videoBitrate: '600k',
     maxRate: '850k',
     bufSize: '1200k',
-    fps: '24',
+    fps: '25',
+    gop: '25',
     qmin: '3',
     qmax: '12'
   },
@@ -79,7 +80,8 @@ const QUALITY_PROFILES = {
     videoBitrate: '900k',
     maxRate: '1200k',
     bufSize: '1800k',
-    fps: '24',
+    fps: '25',
+    gop: '25',
     qmin: '3',
     qmax: '14'
   },
@@ -88,7 +90,8 @@ const QUALITY_PROFILES = {
     videoBitrate: '1350k',
     maxRate: '1750k',
     bufSize: '2400k',
-    fps: '24',
+    fps: '25',
+    gop: '25',
     qmin: '4',
     qmax: '16'
   }
@@ -107,7 +110,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'Tesla In-Motion Canvas Video Stream Server',
-    version: '5.2.0-locked-sync-governor',
+    version: '5.3.0-realtime-pacing-audio-sync',
     hasCookies: fs.existsSync(COOKIES_PATH),
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     activeStreams,
@@ -174,7 +177,7 @@ app.get('/health', (req, res) => {
     streamTelemetry: latestStreamTelemetry,
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     uptime: process.uptime(),
-    version: '5.2.0-locked-sync-governor'
+    version: '5.3.0-realtime-pacing-audio-sync'
   });
 });
 
@@ -352,7 +355,7 @@ wss.on('connection', (ws, req) => {
   });
 
   try {
-    // Calibrated zero-drop MPEG-1 transcode profile running at >1.5x real-time on cloud vCPU
+    // Calibrated zero-drop MPEG-1 transcode profile with strict real-time wall-clock pacing
     const startFfmpeg = (inputArgs) => {
       ffmpegProcess = spawn('ffmpeg', [
         '-threads', '2',
@@ -364,12 +367,15 @@ wss.on('connection', (ws, req) => {
         '-maxrate', profile.maxRate,
         '-bufsize', profile.bufSize,
         '-r', profile.fps,
+        '-g', profile.gop || '25',
+        '-keyint_min', profile.gop || '25',
         '-fps_mode', 'cfr',
         '-qmin', profile.qmin || '3',
         '-qmax', profile.qmax || '12',
         '-bf', '0',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
+        '-vf', 'realtime',
         '-muxdelay', '0.001',
         '-muxpreload', '0.001',
         '-flush_packets', '1',
@@ -377,7 +383,7 @@ wss.on('connection', (ws, req) => {
         '-ar', '44100',
         '-ac', '2',
         '-b:a', '96k',
-        '-af', 'aresample=async=1000:min_hard_comp=0.100000:first_pts=0',
+        '-af', 'arealtime,aresample=async=1000:min_hard_comp=0.100000:first_pts=0',
         '-'
       ]);
 
@@ -403,10 +409,10 @@ wss.on('connection', (ws, req) => {
         }
       });
 
-      // Stream binary MPEG-TS chunks over WebSocket with backpressure guard
+      // Stream binary MPEG-TS chunks over WebSocket with responsive 384KB cellular backpressure guard
       ffmpegProcess.stdout.on('data', (chunk) => {
         if (ws.readyState === ws.OPEN) {
-          if (ws.bufferedAmount > 3 * 1024 * 1024) {
+          if (ws.bufferedAmount > 384 * 1024) {
             ffmpegProcess.stdout.pause();
             return;
           }
@@ -538,7 +544,7 @@ wss.on('connection', (ws, req) => {
         clearInterval(drainTimer);
         return;
       }
-      if (ws.readyState === ws.OPEN && ws.bufferedAmount < 512 * 1024 && ffmpegProcess && ffmpegProcess.stdout && ffmpegProcess.stdout.isPaused()) {
+      if (ws.readyState === ws.OPEN && ws.bufferedAmount < 128 * 1024 && ffmpegProcess && ffmpegProcess.stdout && ffmpegProcess.stdout.isPaused()) {
         ffmpegProcess.stdout.resume();
       }
     }, 100);
@@ -550,7 +556,7 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Tesla Drive Stream Server v4.2.0 (Automated BotGuard POT Provider) listening on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Tesla Drive Stream Server v5.3.0 (Realtime Pacing & A/V Sync) listening on http://0.0.0.0:${PORT}`);
   console.log(`📡 WebSocket ready at ws://0.0.0.0:${PORT}/stream?v=<youtubeId>`);
 });
 
