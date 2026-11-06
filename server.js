@@ -67,30 +67,30 @@ if (fs.existsSync(POT_SCRIPT)) {
 const QUALITY_PROFILES = {
   '360p': {
     resolution: '640x360',
-    videoBitrate: '850k',
-    maxRate: '1200k',
-    bufSize: '1800k',
+    videoBitrate: '600k',
+    maxRate: '850k',
+    bufSize: '1200k',
     fps: '24',
-    qmin: '2',
-    qmax: '6'
+    qmin: '3',
+    qmax: '12'
   },
   '480p': {
     resolution: '854x480',
-    videoBitrate: '1100k',
-    maxRate: '1400k',
-    bufSize: '2200k',
+    videoBitrate: '900k',
+    maxRate: '1200k',
+    bufSize: '1800k',
     fps: '24',
-    qmin: '2',
-    qmax: '8'
+    qmin: '3',
+    qmax: '14'
   },
   '720p': {
     resolution: '1280x720',
-    videoBitrate: '1600k',
-    maxRate: '2000k',
-    bufSize: '3200k',
+    videoBitrate: '1350k',
+    maxRate: '1750k',
+    bufSize: '2400k',
     fps: '24',
-    qmin: '2',
-    qmax: '10'
+    qmin: '4',
+    qmax: '16'
   }
 };
 
@@ -107,7 +107,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'Tesla In-Motion Canvas Video Stream Server',
-    version: '5.1.0-zero-drop-calibration',
+    version: '5.2.0-locked-sync-governor',
     hasCookies: fs.existsSync(COOKIES_PATH),
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     activeStreams,
@@ -174,7 +174,7 @@ app.get('/health', (req, res) => {
     streamTelemetry: latestStreamTelemetry,
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     uptime: process.uptime(),
-    version: '5.1.0-zero-drop-calibration'
+    version: '5.2.0-locked-sync-governor'
   });
 });
 
@@ -208,9 +208,16 @@ app.get('/diag', async (req, res) => {
   // Otherwise test yt-dlp
   const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const hasCookies = fs.existsSync(COOKIES_PATH);
-  const clientArg = hasCookies
-    ? 'youtube:player_client=web'
-    : 'youtube:player_client=android,ios,mweb,web';
+  let isFullAuthCookie = false;
+  if (hasCookies) {
+    try {
+      const c = fs.readFileSync(COOKIES_PATH, 'utf8');
+      isFullAuthCookie = c.includes('LOGIN_INFO') || c.includes('__Secure-3PSID') || c.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length > 30;
+    } catch {}
+  }
+  const clientArg = isFullAuthCookie
+    ? 'youtube:player_client=web,android,ios'
+    : 'youtube:player_client=ios,android,mweb';
   const potArgs = fs.existsSync(POT_SCRIPT)
     ? [
         '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
@@ -357,15 +364,20 @@ wss.on('connection', (ws, req) => {
         '-maxrate', profile.maxRate,
         '-bufsize', profile.bufSize,
         '-r', profile.fps,
-        '-qmin', profile.qmin || '2',
-        '-qmax', profile.qmax || '6',
+        '-fps_mode', 'cfr',
+        '-qmin', profile.qmin || '3',
+        '-qmax', profile.qmax || '12',
         '-bf', '0',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
+        '-muxdelay', '0.001',
+        '-muxpreload', '0.001',
+        '-flush_packets', '1',
         '-codec:a', 'mp2',
-        '-ar', '48000',
+        '-ar', '44100',
         '-ac', '2',
         '-b:a', '96k',
+        '-af', 'aresample=async=1000:min_hard_comp=0.100000:first_pts=0',
         '-'
       ]);
 
@@ -408,7 +420,6 @@ wss.on('connection', (ws, req) => {
     if (DIRECT_STREAM_MAP[videoId]) {
       console.log(`[Direct CDN Fast-Path] Routing ${videoId} to official Akamai stream with live sync: ${DIRECT_STREAM_MAP[videoId]}`);
       startFfmpeg([
-        '-re',
         '-fflags', '+nobuffer+flush_packets+discardcorrupt',
         '-flags', 'low_delay',
         '-reconnect', '1',
@@ -419,12 +430,19 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
-    // Standard YouTube path using yt-dlp
+    // Standard YouTube path using yt-dlp with smart client selection
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const hasCookies = fs.existsSync(COOKIES_PATH);
-    const clientArg = hasCookies
-      ? 'youtube:player_client=web'
-      : 'youtube:player_client=android,ios,mweb,web';
+    let isFullAuthCookie = false;
+    if (hasCookies) {
+      try {
+        const c = fs.readFileSync(COOKIES_PATH, 'utf8');
+        isFullAuthCookie = c.includes('LOGIN_INFO') || c.includes('__Secure-3PSID') || c.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length > 30;
+      } catch {}
+    }
+    const clientArg = isFullAuthCookie
+      ? 'youtube:player_client=web,android,ios'
+      : 'youtube:player_client=ios,android,mweb';
     const potArgs = fs.existsSync(POT_SCRIPT)
       ? [
           '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
