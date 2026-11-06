@@ -77,23 +77,33 @@ const QUALITY_PROFILES = {
   },
   '480p': {
     resolution: '854x480',
-    videoBitrate: '900k',
-    maxRate: '1200k',
-    bufSize: '1800k',
+    videoBitrate: '850k',
+    maxRate: '1100k',
+    bufSize: '1600k',
     fps: '25',
     gop: '25',
     qmin: '3',
     qmax: '14'
   },
-  '720p': {
-    resolution: '1280x720',
-    videoBitrate: '1350k',
-    maxRate: '1750k',
-    bufSize: '2400k',
+  '540p': {
+    resolution: '960x540',
+    videoBitrate: '1050k',
+    maxRate: '1350k',
+    bufSize: '1900k',
     fps: '25',
     gop: '25',
     qmin: '4',
     qmax: '16'
+  },
+  '720p': {
+    resolution: '1280x720',
+    videoBitrate: '1100k',
+    maxRate: '1450k',
+    bufSize: '2000k',
+    fps: '25',
+    gop: '25',
+    qmin: '5',
+    qmax: '20'
   }
 };
 
