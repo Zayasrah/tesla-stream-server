@@ -311,6 +311,77 @@ app.get('/api/youtube-search', async (req, res) => {
   }
 });
 
+// Video Metadata Cache & API Endpoint for sub-second timeline duration precision
+const VIDEO_META_CACHE = new Map(); // videoId -> { id, duration, durationSeconds, title }
+
+app.get('/api/video-meta', async (req, res) => {
+  const videoId = (req.query.v || '').trim();
+  if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) {
+    return res.status(400).json({ error: 'Valid 11-char YouTube video ID required' });
+  }
+
+  // 1. In-memory cache hit
+  if (VIDEO_META_CACHE.has(videoId)) {
+    return res.json(VIDEO_META_CACHE.get(videoId));
+  }
+
+  // 2. Direct live broadcast check
+  if (DIRECT_STREAM_MAP[videoId] || videoId === 'eC4LfEVxvKg' || videoId === 'Rs7St51oDDc') {
+    const meta = { id: videoId, isLive: true, duration: '', durationSeconds: 0 };
+    VIDEO_META_CACHE.set(videoId, meta);
+    return res.json(meta);
+  }
+
+  // 3. Fast lookup via yt-dlp metadata query
+  try {
+    const ytdlp = spawn('python3', [
+      '-m', 'yt_dlp',
+      '--skip-download',
+      '--no-warnings',
+      '--socket-timeout', '6',
+      '--print', '%(duration)s|%(duration_string)s|%(title)s',
+      `https://www.youtube.com/watch?v=${videoId}`
+    ], {
+      env: {
+        ...process.env,
+        HOME: '/home/node',
+        PATH: '/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || '')
+      }
+    });
+
+    let output = '';
+    ytdlp.stdout.on('data', (d) => { output += d.toString(); });
+
+    const timer = setTimeout(() => {
+      try { ytdlp.kill('SIGKILL'); } catch (e) {}
+    }, 8000);
+
+    ytdlp.on('close', (code) => {
+      clearTimeout(timer);
+      const parts = output.trim().split('|');
+      if (code === 0 && parts.length >= 2) {
+        const sec = parseInt(parts[0], 10) || 0;
+        const durStr = parts[1] || '';
+        const title = parts[2] || '';
+        const meta = { id: videoId, duration: durStr, durationSeconds: sec, title };
+        if (sec > 0) {
+          VIDEO_META_CACHE.set(videoId, meta);
+        }
+        res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=604800');
+        return res.json(meta);
+      }
+      return res.json({ id: videoId, duration: '', durationSeconds: 0 });
+    });
+
+    ytdlp.on('error', () => {
+      clearTimeout(timer);
+      return res.json({ id: videoId, duration: '', durationSeconds: 0 });
+    });
+  } catch (err) {
+    return res.json({ id: videoId, duration: '', durationSeconds: 0, error: err.message });
+  }
+});
+
 // Health & Probe / Web App root endpoint
 app.get('/', (req, res) => {
   const indexPath = path.join(PUBLIC_DIR, 'index.html');
