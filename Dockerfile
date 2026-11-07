@@ -1,19 +1,23 @@
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
-# Install system dependencies (ffmpeg, python3, pip, curl)
+# Install system dependencies (ffmpeg, python3, pip, curl, unzip)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     python3 \
     python3-pip \
     curl \
     ca-certificates \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Symlink node to /usr/bin/node so yt-dlp automatically detects Node.js for JS signature deciphering
+# Symlink node to /usr/bin/node
 RUN ln -sf /usr/local/bin/node /usr/bin/node
 
-# Force fresh installation of yt-dlp nightly and yt-dlp-ejs (Cache-busting build)
-ENV YTDLP_FORCE_EJS_CACHEBUST="2026-11-07-v5.5.2"
+# Install Deno (yt-dlp's natively supported #1 preferred JS challenge solver)
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
+
+# Install latest pre-release/nightly yt-dlp, yt-dlp-ejs, curl_cffi, and bgutil-ytdlp-pot-provider
+ENV YTDLP_FORCE_EJS_CACHEBUST="2026-11-07-v5.5.3-node22-deno"
 RUN pip3 install --no-cache-dir --break-system-packages --upgrade --pre "yt-dlp[default,curl-cffi]" "yt-dlp-ejs" "curl_cffi" "bgutil-ytdlp-pot-provider"
 
 # Copy prebuilt BotGuard Proof-of-Origin Token provider server from official Docker Hub image

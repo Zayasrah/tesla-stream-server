@@ -120,7 +120,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'Tesla In-Motion Canvas Video Stream Server',
-    version: '5.5.2-guaranteed-ejs-solver',
+    version: '5.5.3-node22-deno-challenge-solver',
     hasCookies: fs.existsSync(COOKIES_PATH),
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     activeStreams,
@@ -219,7 +219,7 @@ app.get('/health', (req, res) => {
     streamTelemetry: latestStreamTelemetry,
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     uptime: process.uptime(),
-    version: '5.5.2-guaranteed-ejs-solver'
+    version: '5.5.3-node22-deno-challenge-solver'
   });
 });
 
@@ -274,7 +274,7 @@ app.get('/diag', async (req, res) => {
     '--socket-timeout', '10',
     '--no-cache-dir',
     '--no-warnings',
-    '--js-runtimes', 'node',
+    '--js-runtimes', 'deno,node',
     ...potArgs,
     ...clientArgs,
     '-f', req.query.f || '18/b[ext=mp4]/b/bestvideo[height<=720]+bestaudio/best*',
@@ -500,7 +500,7 @@ wss.on('connection', (ws, req) => {
       '--socket-timeout', '10',
       '--no-cache-dir',
       '--no-warnings',
-      '--js-runtimes', 'node',
+      '--js-runtimes', 'deno,node',
       ...potArgs,
       '-f', '18/b[ext=mp4]/b/bestvideo[height<=720]+bestaudio/best*',
       '-g',
@@ -549,7 +549,7 @@ wss.on('connection', (ws, req) => {
           '--socket-timeout', '10',
           '--no-cache-dir',
           '--no-warnings',
-          '--js-runtimes', 'node',
+          '--js-runtimes', 'deno,node',
           ...potArgs,
           '-f', '18/b[ext=mp4]/b/best*',
           '-o', '-',
@@ -599,7 +599,7 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Tesla Drive Stream Server v5.5.2 (Guaranteed EJS Node Challenge Solver) listening on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Tesla Drive Stream Server v5.5.3 (Node 22 + Deno EJS Engine) listening on http://0.0.0.0:${PORT}`);
   console.log(`📡 WebSocket ready at ws://0.0.0.0:${PORT}/stream?v=<youtubeId>`);
   // Background auto-upgrade of yt-dlp to latest nightly so YouTube JS player updates are always supported
   try {
