@@ -426,10 +426,9 @@ app.get('/diag', async (req, res) => {
   const ytdlpArgs = [
     '-v',
     '-4',
-    '--socket-timeout', '10',
-    '--no-cache-dir',
+    '--socket-timeout', '15',
+    '--cache-dir', '/tmp/ytdlp_cache',
     '--no-warnings',
-    '--js-runtimes', 'deno',
     '--js-runtimes', 'node',
     ...potArgs,
     ...clientArgs,
@@ -460,12 +459,12 @@ app.get('/diag', async (req, res) => {
   const timer = setTimeout(() => {
     try { ytdlp.kill('SIGKILL'); } catch (e) {}
     res.status(504).json({
-      error: 'Timeout after 30s',
+      error: 'Timeout after 60s',
       stdout: stdout.slice(0, 1000),
       stderr: stderr,
       elapsedMs: Date.now() - start
     });
-  }, 30000);
+  }, 60000);
 
   ytdlp.on('close', (code) => {
     clearTimeout(timer);
@@ -653,11 +652,10 @@ wss.on('connection', (ws, req) => {
       : [];
     const ytdlpArgs = [
       '-4',
-      '--socket-timeout', '10',
-      '--no-cache-dir',
+      '--socket-timeout', '15',
+      '--cache-dir', '/tmp/ytdlp_cache',
       '--no-warnings',
-      '--js-runtimes', 'deno',
-    '--js-runtimes', 'node',
+      '--js-runtimes', 'node',
       ...potArgs,
       '-f', '18/b[ext=mp4]/b/bestvideo[height<=720]+bestaudio/best*',
       '-g',
@@ -703,11 +701,10 @@ wss.on('connection', (ws, req) => {
         console.warn(`[Stream Pipe Fallback for ${videoId}] Falling back to progressive MP4 stdout pipe...`);
         const pipeArgs = [
           '-4',
-          '--socket-timeout', '10',
-          '--no-cache-dir',
+          '--socket-timeout', '15',
+          '--cache-dir', '/tmp/ytdlp_cache',
           '--no-warnings',
-          '--js-runtimes', 'deno',
-    '--js-runtimes', 'node',
+          '--js-runtimes', 'node',
           ...potArgs,
           '-f', '18/b[ext=mp4]/b/best*',
           '-o', '-',
