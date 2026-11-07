@@ -170,13 +170,37 @@ app.post('/cookies', (req, res) => {
   }
   try {
     const sanitized = sanitizeNetscapeCookies(cookies);
-    fs.writeFileSync(COOKIES_PATH, sanitized, 'utf8');
     const validLines = sanitized.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length;
+    // Guard: Prevent legacy multi-site browser dumps from corrupting clean Incognito cookies
+    if (validLines > 60 && process.env.YOUTUBE_COOKIES) {
+      return res.status(400).json({
+        error: 'Refusing multi-site cookie dump: Server is already protected with clean Incognito cookies via YOUTUBE_COOKIES.'
+      });
+    }
+    fs.writeFileSync(COOKIES_PATH, sanitized, 'utf8');
     console.log(`✅ Cookies sanitized & updated via /cookies API endpoint (${validLines} valid YouTube/Google cookies)!`);
     res.json({ status: 'ok', message: 'Cookies saved successfully', hasCookies: true, validLines });
   } catch (err) {
     res.status(500).json({ error: 'Failed to write cookies: ' + err.message });
   }
+});
+
+// Endpoint to reset cookies back to authoritative YOUTUBE_COOKIES environment variable
+app.post('/cookies/reset-to-env', (req, res) => {
+  if (process.env.YOUTUBE_COOKIES && process.env.YOUTUBE_COOKIES.trim().length > 10) {
+    try {
+      let raw = process.env.YOUTUBE_COOKIES.trim();
+      if (raw.includes('\\n')) {
+        raw = raw.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+      }
+      fs.writeFileSync(COOKIES_PATH, raw, 'utf8');
+      const lines = raw.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length;
+      return res.json({ status: 'ok', message: `Reset to ENV cookies (${lines} lines)`, validLines: lines });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+  res.status(404).json({ error: 'YOUTUBE_COOKIES environment variable not defined' });
 });
 
 // Endpoint to clear YouTube cookies
