@@ -1,0 +1,16 @@
+{
+  "name": "Tesla Quran | قرآن تسلا",
+  "short_name": "Tesla Quran",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#07080B",
+  "theme_color": "#07080B",
+  "orientation": "landscape",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

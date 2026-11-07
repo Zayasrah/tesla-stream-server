@@ -29,9 +29,10 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --production
 
-# Copy server code
+# Copy server code and bundled frontend web app
 COPY server.js ./
 COPY render.yaml ./
+COPY public ./public
 
 # Assign ownership to the built-in 'node' user (UID 1000 in official node image)
 RUN chown -R node:node /app /opt/bgutil-provider

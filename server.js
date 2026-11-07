@@ -113,14 +113,145 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
+const PUBLIC_DIR = path.join(__dirname, 'public');
+if (fs.existsSync(PUBLIC_DIR)) {
+  console.log('📦 Serving bundled static frontend web app from', PUBLIC_DIR);
+  app.use(express.static(PUBLIC_DIR, { maxAge: '1h' }));
+}
+
 let activeStreams = 0;
 
-// Health & Probe endpoint
+// Universal YouTube Video Search Proxy (supports native search directly on Render)
+async function searchYouTube(query) {
+  if (!query || !query.trim()) return [];
+
+  // 1. Direct YouTube Web Search Parser
+  try {
+    const url = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(query);
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'ar,en;q=0.9'
+      },
+      signal: AbortSignal.timeout(5000)
+    });
+
+    if (res.ok) {
+      const html = await res.text();
+      const m = html.match(/var ytInitialData = ({.*?});<\/script>/s) || html.match(/ytInitialData\s*=\s*({.+?});/);
+      if (m) {
+        const data = JSON.parse(m[1]);
+        const sections = data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+        const videos = [];
+        for (const section of sections) {
+          const items = section.itemSectionRenderer?.contents || [];
+          for (const item of items) {
+            const v = item.videoRenderer;
+            if (v && v.videoId) {
+              const title = v.title?.runs?.map(r => r.text).join('') || v.title?.simpleText || '';
+              const channel = v.ownerText?.runs?.map(r => r.text).join('') || '';
+              const duration = v.lengthText?.simpleText || '';
+              const views = v.viewCountText?.simpleText || '';
+              const thumb = v.thumbnail?.thumbnails?.pop()?.url || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`;
+              videos.push({
+                id: v.videoId,
+                titleAr: title,
+                titleEn: title,
+                category: 'recitation',
+                reciterName: channel,
+                channelName: channel,
+                duration: duration,
+                qualityBadge: duration ? 'HD' : 'Live',
+                thumbnailUrl: thumb,
+                views: views
+              });
+            }
+          }
+        }
+        if (videos.length > 0) {
+          return videos.slice(0, 30);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Direct YouTube search scrape failed, falling back:', err.message);
+  }
+
+  // 2. High-Resilience Fallback: DuckDuckGo Video Index
+  try {
+    const tokenRes = await fetch('https://duckduckgo.com/?q=' + encodeURIComponent(query), {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+      signal: AbortSignal.timeout(4000)
+    });
+    const html = await tokenRes.text();
+    const vqdMatch = html.match(/vqd=([0-9-]+)/) || html.match(/vqd="([0-9-]+)"/);
+    if (vqdMatch) {
+      const vqd = vqdMatch[1];
+      const videoRes = await fetch('https://duckduckgo.com/v.js?l=wt-wt&o=json&q=' + encodeURIComponent(query) + '&vqd=' + vqd, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        signal: AbortSignal.timeout(4000)
+      });
+      if (videoRes.ok) {
+        const data = await videoRes.json();
+        const results = (data.results || [])
+          .filter(r => r.content && r.content.includes('youtube.com/watch?v='))
+          .map(r => {
+            const match = r.content.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+            const id = match ? match[1] : '';
+            const title = r.title || '';
+            const channel = r.uploader || '';
+            const duration = r.duration || '';
+            const views = r.statistics?.viewCount ? `${Number(r.statistics.viewCount).toLocaleString()} views` : '';
+            const thumb = id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : (r.images?.large || '');
+            return {
+              id,
+              titleAr: title,
+              titleEn: title,
+              category: 'recitation',
+              reciterName: channel,
+              channelName: channel,
+              duration: duration,
+              qualityBadge: 'HD',
+              thumbnailUrl: thumb,
+              views: views
+            };
+          })
+          .filter(v => v.id);
+        if (results.length > 0) {
+          return results.slice(0, 30);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Fallback video scrape failed:', err.message);
+  }
+
+  return [];
+}
+
+// YouTube Search API endpoint
+app.get('/api/youtube-search', async (req, res) => {
+  const q = req.query.q || '';
+  if (!q.trim()) return res.json([]);
+  try {
+    const videos = await searchYouTube(q);
+    res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=86400');
+    return res.json(videos);
+  } catch (err) {
+    return res.status(500).json({ error: err.message, videos: [] });
+  }
+});
+
+// Health & Probe / Web App root endpoint
 app.get('/', (req, res) => {
+  const indexPath = path.join(PUBLIC_DIR, 'index.html');
+  if (fs.existsSync(indexPath) && (!req.headers.accept || req.headers.accept.includes('text/html'))) {
+    return res.sendFile(indexPath);
+  }
   res.json({
     status: 'online',
-    service: 'Tesla In-Motion Canvas Video Stream Server',
-    version: '5.5.3-node22-deno-challenge-solver',
+    service: 'Tesla In-Motion Canvas Video Stream Server & Web App',
+    version: '5.5.4-node22-deno-challenge-solver',
     hasCookies: fs.existsSync(COOKIES_PATH),
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     activeStreams,
@@ -625,8 +756,26 @@ wss.on('connection', (ws, req) => {
   }
 });
 
+// Single Page Application (SPA) catch-all fallback for client-side routing
+app.get('*', (req, res, next) => {
+  if (
+    req.path.startsWith('/api') ||
+    req.path.startsWith('/health') ||
+    req.path.startsWith('/diag') ||
+    req.path.startsWith('/cookies') ||
+    req.path.startsWith('/stream')
+  ) {
+    return next();
+  }
+  const indexPath = path.join(PUBLIC_DIR, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    return res.sendFile(indexPath);
+  }
+  next();
+});
+
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Tesla Drive Stream Server v5.5.3 (Node 22 + Deno EJS Engine) listening on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Tesla Drive Stream Server v5.5.4 (Node 22 + Deno EJS Engine + Web App) listening on http://0.0.0.0:${PORT}`);
   console.log(`📡 WebSocket ready at ws://0.0.0.0:${PORT}/stream?v=<youtubeId>`);
   // Background auto-upgrade of yt-dlp to latest nightly so YouTube JS player updates are always supported
   try {
