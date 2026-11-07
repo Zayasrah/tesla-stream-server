@@ -12,8 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Symlink node to /usr/bin/node so yt-dlp automatically detects Node.js for JS signature deciphering
 RUN ln -sf /usr/local/bin/node /usr/bin/node
 
-# Install yt-dlp, curl_cffi, and bgutil-ytdlp-pot-provider via pip
-RUN pip3 install --no-cache-dir --break-system-packages "yt-dlp[default]" "curl_cffi" "bgutil-ytdlp-pot-provider"
+# Install latest pre-release/nightly yt-dlp (with yt-dlp-ejs & curl_cffi) and bgutil-ytdlp-pot-provider
+# Cache-busting build date: 2026-11-07-v5.5
+RUN pip3 install --no-cache-dir --break-system-packages --upgrade --pre "yt-dlp[default,curl-cffi]" "curl_cffi" "bgutil-ytdlp-pot-provider"
 
 # Copy prebuilt BotGuard Proof-of-Origin Token provider server from official Docker Hub image
 COPY --from=brainicism/bgutil-ytdlp-pot-provider:latest /app /opt/bgutil-provider

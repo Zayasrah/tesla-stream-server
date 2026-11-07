@@ -120,7 +120,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'Tesla In-Motion Canvas Video Stream Server',
-    version: '5.3.0-realtime-pacing-audio-sync',
+    version: '5.5.0-universal-cookie-extractor',
     hasCookies: fs.existsSync(COOKIES_PATH),
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     activeStreams,
@@ -131,6 +131,36 @@ app.get('/', (req, res) => {
   });
 });
 
+// Helper to sanitize and deduplicate Netscape cookies strictly for YouTube/Google domains
+function sanitizeNetscapeCookies(rawText) {
+  const lines = rawText.split(/\r?\n/);
+  const bestMap = new Map();
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const parts = trimmed.split('\t');
+    if (parts.length < 7) continue;
+    const domain = parts[0].toLowerCase();
+    if (
+      domain.includes('youtube.com') ||
+      domain.includes('google.com') ||
+      domain.includes('googlevideo.com') ||
+      domain.includes('youtu.be')
+    ) {
+      const key = `${parts[0]}|${parts[2]}|${parts[5]}`;
+      const exp = parseInt(parts[4], 10) || 0;
+      if (!bestMap.has(key) || exp >= bestMap.get(key).exp) {
+        bestMap.set(key, { exp, line: trimmed });
+      }
+    }
+  }
+  if (bestMap.size === 0) return rawText.trim();
+  return [
+    '# Netscape HTTP Cookie File',
+    '# http://curl.haxx.se/rfc/cookie_spec.html',
+    ...Array.from(bestMap.values()).map((v) => v.line)
+  ].join('\n') + '\n';
+}
 
 // Endpoint to save YouTube cookies directly from the web app UI
 app.post('/cookies', (req, res) => {
@@ -139,9 +169,11 @@ app.post('/cookies', (req, res) => {
     return res.status(400).json({ error: 'Invalid cookie content' });
   }
   try {
-    fs.writeFileSync(COOKIES_PATH, cookies.trim(), 'utf8');
-    console.log('✅ Cookies updated via /cookies API endpoint!');
-    res.json({ status: 'ok', message: 'Cookies saved successfully', hasCookies: true });
+    const sanitized = sanitizeNetscapeCookies(cookies);
+    fs.writeFileSync(COOKIES_PATH, sanitized, 'utf8');
+    const validLines = sanitized.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length;
+    console.log(`✅ Cookies sanitized & updated via /cookies API endpoint (${validLines} valid YouTube/Google cookies)!`);
+    res.json({ status: 'ok', message: 'Cookies saved successfully', hasCookies: true, validLines });
   } catch (err) {
     res.status(500).json({ error: 'Failed to write cookies: ' + err.message });
   }
@@ -187,7 +219,7 @@ app.get('/health', (req, res) => {
     streamTelemetry: latestStreamTelemetry,
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     uptime: process.uptime(),
-    version: '5.3.0-realtime-pacing-audio-sync'
+    version: '5.5.0-universal-cookie-extractor'
   });
 });
 
@@ -225,12 +257,12 @@ app.get('/diag', async (req, res) => {
   if (hasCookies) {
     try {
       const c = fs.readFileSync(COOKIES_PATH, 'utf8');
-      isFullAuthCookie = c.includes('LOGIN_INFO') || c.includes('__Secure-3PSID') || c.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length > 30;
+      isFullAuthCookie = c.includes('LOGIN_INFO') || c.includes('__Secure-3PSID') || c.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length > 10;
     } catch {}
   }
   const clientArg = isFullAuthCookie
-    ? 'youtube:player_client=web,android,ios'
-    : 'youtube:player_client=ios,android,mweb';
+    ? 'youtube:player_client=tv,web_creator,mweb,web'
+    : 'youtube:player_client=tv,ios,android,mweb,web';
   const potArgs = fs.existsSync(POT_SCRIPT)
     ? [
         '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
@@ -244,7 +276,7 @@ app.get('/diag', async (req, res) => {
     '--no-warnings',
     '--extractor-args', clientArg,
     ...potArgs,
-    '-f', '18/b[ext=mp4]/best',
+    '-f', '18/b[ext=mp4]/b/bestvideo[height<=720]+bestaudio/best*',
     '-g',
     youtubeUrl
   ];
@@ -453,12 +485,12 @@ wss.on('connection', (ws, req) => {
     if (hasCookies) {
       try {
         const c = fs.readFileSync(COOKIES_PATH, 'utf8');
-        isFullAuthCookie = c.includes('LOGIN_INFO') || c.includes('__Secure-3PSID') || c.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length > 30;
+        isFullAuthCookie = c.includes('LOGIN_INFO') || c.includes('__Secure-3PSID') || c.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length > 10;
       } catch {}
     }
     const clientArg = isFullAuthCookie
-      ? 'youtube:player_client=web,android,ios'
-      : 'youtube:player_client=ios,android,mweb';
+      ? 'youtube:player_client=tv,web_creator,mweb,web'
+      : 'youtube:player_client=tv,ios,android,mweb,web';
     const potArgs = fs.existsSync(POT_SCRIPT)
       ? [
           '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
@@ -471,7 +503,7 @@ wss.on('connection', (ws, req) => {
       '--no-warnings',
       '--extractor-args', clientArg,
       ...potArgs,
-      '-f', '18/b[ext=mp4]/best[ext=mp4]/b/best',
+      '-f', '18/b[ext=mp4]/b/bestvideo[height<=720]+bestaudio/best*',
       '-g',
       youtubeUrl
     ];
@@ -519,7 +551,7 @@ wss.on('connection', (ws, req) => {
           '--no-warnings',
           '--extractor-args', clientArg,
           ...potArgs,
-          '-f', '18/best[ext=mp4]/best',
+          '-f', '18/b[ext=mp4]/b/best*',
           '-o', '-',
           youtubeUrl
         ];
@@ -566,8 +598,15 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Tesla Drive Stream Server v5.3.0 (Realtime Pacing & A/V Sync) listening on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Tesla Drive Stream Server v5.5.0 (Universal Cookie & TV Client Extractor) listening on http://0.0.0.0:${PORT}`);
   console.log(`📡 WebSocket ready at ws://0.0.0.0:${PORT}/stream?v=<youtubeId>`);
+  // Background auto-upgrade of yt-dlp to latest nightly so YouTube JS player updates are always supported
+  try {
+    const updater = spawn('python3', ['-m', 'pip', 'install', '--upgrade', '--pre', '--break-system-packages', 'yt-dlp[default,curl-cffi]'], {
+      stdio: 'ignore'
+    });
+    updater.on('error', () => {});
+  } catch {}
 });
 
 // Process signal handlers for clean container shutdown
