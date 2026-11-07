@@ -156,23 +156,33 @@ const QUALITY_PROFILES = {
   },
   '540p': {
     resolution: '960x540',
-    videoBitrate: '1050k',
-    maxRate: '1350k',
-    bufSize: '1900k',
+    videoBitrate: '1200k',
+    maxRate: '1600k',
+    bufSize: '2400k',
     fps: '25',
     gop: '25',
-    qmin: '4',
-    qmax: '16'
+    qmin: '3',
+    qmax: '12'
   },
   '720p': {
     resolution: '1280x720',
-    videoBitrate: '1100k',
-    maxRate: '1450k',
-    bufSize: '2000k',
+    videoBitrate: '1400k',
+    maxRate: '1900k',
+    bufSize: '2800k',
     fps: '25',
     gop: '25',
-    qmin: '5',
-    qmax: '20'
+    qmin: '3',
+    qmax: '14'
+  },
+  '720p-pro': {
+    resolution: '1280x720',
+    videoBitrate: '1850k',
+    maxRate: '2400k',
+    bufSize: '3600k',
+    fps: '25',
+    gop: '25',
+    qmin: '2',
+    qmax: '8'
   }
 };
 
@@ -521,7 +531,7 @@ app.get('/health', (req, res) => {
     hasPotProvider: isPotServerHealthy,
     cachedStreamsCount: RESOLVED_URL_CACHE.size,
     uptime: process.uptime(),
-    version: '5.6.0-timeline-seek-and-watch-history'
+    version: '5.7.0-driver-stream-lab-and-540p'
   });
 });
 
@@ -680,8 +690,30 @@ wss.on('connection', (ws, req) => {
   activeStreams++;
   const requestedQuality = url.searchParams.get('q') || url.searchParams.get('quality') || '360p';
   const seekSeconds = Math.max(0, parseFloat(url.searchParams.get('ss') || url.searchParams.get('t') || '0'));
-  const profile = QUALITY_PROFILES[requestedQuality] || QUALITY_PROFILES['360p'];
-  console.log(`[Stream Started] Video: ${videoId} | Quality: ${requestedQuality} | Seek: ${seekSeconds}s | Active Streams: ${activeStreams}`);
+  const baseProfile = QUALITY_PROFILES[requestedQuality] || QUALITY_PROFILES['360p'];
+
+  // Driver Stream Lab Custom Overrides (Sanitized for cloud stability and memory safety)
+  const customFps = url.searchParams.get('fps');
+  const customBitrate = url.searchParams.get('bitrate') || url.searchParams.get('b');
+  const customQmin = url.searchParams.get('qmin');
+  const customQmax = url.searchParams.get('qmax');
+  const customRes = url.searchParams.get('res');
+
+  const profile = {
+    resolution: (customRes && /^\d+x\d+$/.test(customRes)) ? customRes : baseProfile.resolution,
+    videoBitrate: (customBitrate && /^\d+k$/.test(customBitrate)) ? customBitrate : baseProfile.videoBitrate,
+    maxRate: (customBitrate && /^\d+k$/.test(customBitrate))
+      ? `${Math.round(parseInt(customBitrate, 10) * 1.3)}k`
+      : baseProfile.maxRate,
+    bufSize: (customBitrate && /^\d+k$/.test(customBitrate))
+      ? `${Math.round(parseInt(customBitrate, 10) * 1.8)}k`
+      : baseProfile.bufSize,
+    fps: (customFps && ['20', '24', '25', '30'].includes(customFps)) ? customFps : baseProfile.fps,
+    gop: (customFps && ['20', '24', '25', '30'].includes(customFps)) ? customFps : baseProfile.gop,
+    qmin: (customQmin && !isNaN(parseInt(customQmin, 10))) ? Math.max(1, Math.min(10, parseInt(customQmin, 10))).toString() : baseProfile.qmin,
+    qmax: (customQmax && !isNaN(parseInt(customQmax, 10))) ? Math.max(5, Math.min(30, parseInt(customQmax, 10))).toString() : baseProfile.qmax,
+  };
+  console.log(`[Stream Started] Video: ${videoId} | Quality: ${requestedQuality} (${profile.resolution}, ${profile.videoBitrate}, ${profile.fps}fps, qmin:${profile.qmin}, qmax:${profile.qmax}) | Seek: ${seekSeconds}s | Active Streams: ${activeStreams}`);
 
   let ytdlpProcess = null;
   let ffmpegProcess = null;
@@ -781,6 +813,8 @@ wss.on('connection', (ws, req) => {
         '-fps_mode', 'cfr',
         '-qmin', profile.qmin || '3',
         '-qmax', profile.qmax || '12',
+        '-trellis', '1',
+        '-flags', '+mv0',
         '-bf', '0',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
@@ -1025,7 +1059,7 @@ app.get('*', (req, res, next) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Tesla Drive Stream Server v5.6.0 (Timeline Seek & Watch History) listening on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Tesla Drive Stream Server v5.7.0 (Driver Stream Lab & 540p Sweet Spot) listening on http://0.0.0.0:${PORT}`);
   console.log(`📡 WebSocket ready at ws://0.0.0.0:${PORT}/stream?v=<youtubeId>`);
 
   // Active memory watchdog to keep RSS safely under 250MB on Render 512MB Free Tier
