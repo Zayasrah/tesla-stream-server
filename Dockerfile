@@ -45,4 +45,4 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 7860
 
-CMD ["node", "server.js"]
+CMD ["node", "--max-old-space-size=128", "--expose-gc", "server.js"]

@@ -12,3 +12,7 @@ services:
         value: 7860
       - key: NODE_ENV
         value: production
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=128 --expose-gc"
+      - key: MAX_STREAMS
+        value: "1"

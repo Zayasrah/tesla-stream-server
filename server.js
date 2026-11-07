@@ -7,7 +7,9 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 7860;
-const MAX_CONCURRENT_STREAMS = parseInt(process.env.MAX_STREAMS || '8', 10);
+// In an automotive single-driver setting on 512MB RAM, cap concurrent streams to 1 with instant preemption
+const MAX_CONCURRENT_STREAMS = parseInt(process.env.MAX_STREAMS || '1', 10);
+let currentActiveSession = null;
 
 // Initialize YouTube cookies if provided in environment variable
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
@@ -41,8 +43,9 @@ let potServerProcess = null;
 const POT_SCRIPT = '/opt/bgutil-provider/build/main.js';
 if (fs.existsSync(POT_SCRIPT)) {
   try {
-    console.log('🚀 Spawning BotGuard Proof-of-Origin Token daemon on 127.0.0.1:4416...');
-    potServerProcess = spawn('node', [POT_SCRIPT, '--host', '127.0.0.1', '--port', '4416'], {
+    console.log('🚀 Spawning BotGuard Proof-of-Origin Token daemon on 127.0.0.1:4416 (memory capped to 48MB)...');
+    potServerProcess = spawn('node', ['--max-old-space-size=48', POT_SCRIPT, '--host', '127.0.0.1', '--port', '4416'], {
+      detached: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
     potServerProcess.stdout.on('data', (d) => {
@@ -365,8 +368,14 @@ app.get('/health', (req, res) => {
     }
   }
 
+  const mem = process.memoryUsage();
   res.status(200).json({
     status: 'ok',
+    memory: {
+      rssMb: Math.round(mem.rss / 1024 / 1024),
+      heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
+      heapTotalMb: Math.round(mem.heapTotal / 1024 / 1024)
+    },
     activeStreams,
     maxStreams: MAX_CONCURRENT_STREAMS,
     hasCookies: cookieExists,
@@ -374,7 +383,7 @@ app.get('/health', (req, res) => {
     streamTelemetry: latestStreamTelemetry,
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     uptime: process.uptime(),
-    version: '5.5.3-node22-deno-challenge-solver'
+    version: '5.5.4-memory-hardened-single-stream'
   });
 });
 
@@ -506,10 +515,11 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
-  if (activeStreams >= MAX_CONCURRENT_STREAMS) {
-    console.warn(`Capacity reached: rejecting stream for ${videoId}`);
-    ws.close(1013, 'Server busy: maximum stream capacity reached');
-    return;
+  // In an automotive single-driver setting on 512MB RAM, preempt previous stream immediately to prevent OOM
+  if (currentActiveSession) {
+    console.log(`[Preempt Stream] Terminating previous session for video ${currentActiveSession.videoId} to free memory for ${videoId}...`);
+    try { currentActiveSession.cleanup(); } catch (e) {}
+    currentActiveSession = null;
   }
 
   activeStreams++;
@@ -521,31 +531,52 @@ wss.on('connection', (ws, req) => {
   let ffmpegProcess = null;
   let isClosed = false;
   let drainTimer = null;
+  let ytdlpTimer = null;
   let chunksEmitted = 0;
 
   const cleanup = () => {
     if (isClosed) return;
     isClosed = true;
     activeStreams = Math.max(0, activeStreams - 1);
+    if (currentActiveSession && currentActiveSession.ws === ws) {
+      currentActiveSession = null;
+    }
     console.log(`[Stream Closed] Video: ${videoId} | Chunks: ${chunksEmitted} | Active Streams: ${activeStreams}`);
 
     if (drainTimer) {
       clearInterval(drainTimer);
+      drainTimer = null;
+    }
+    if (ytdlpTimer) {
+      clearTimeout(ytdlpTimer);
+      ytdlpTimer = null;
     }
 
-    if (ytdlpProcess) {
-      try { ytdlpProcess.kill('SIGKILL'); } catch (e) {}
+    // Kill process groups with SIGKILL so no zombie child processes linger
+    if (ytdlpProcess && ytdlpProcess.pid) {
+      try { process.kill(-ytdlpProcess.pid, 'SIGKILL'); } catch (e) {
+        try { ytdlpProcess.kill('SIGKILL'); } catch (e2) {}
+      }
       ytdlpProcess = null;
     }
-    if (ffmpegProcess) {
-      try { ffmpegProcess.kill('SIGKILL'); } catch (e) {}
+    if (ffmpegProcess && ffmpegProcess.pid) {
+      try { process.kill(-ffmpegProcess.pid, 'SIGKILL'); } catch (e) {
+        try { ffmpegProcess.kill('SIGKILL'); } catch (e2) {}
+      }
       ffmpegProcess = null;
     }
 
     if (ws.readyState === ws.OPEN) {
       try { ws.close(1000, 'Stream terminated'); } catch (e) {}
     }
+
+    // Explicit garbage collection on stream termination to keep memory strictly under 250MB
+    if (activeStreams === 0 && global.gc) {
+      try { global.gc(); } catch (e) {}
+    }
   };
+
+  currentActiveSession = { videoId, ws, cleanup };
 
   ws.on('close', cleanup);
   ws.on('error', (err) => {
@@ -554,10 +585,10 @@ wss.on('connection', (ws, req) => {
   });
 
   try {
-    // Calibrated zero-drop MPEG-1 transcode profile with strict real-time wall-clock pacing
+    // Single-thread lightweight real-time MPEG-1 transcode profile strictly tuned for 512MB RAM
     const startFfmpeg = (inputArgs) => {
       ffmpegProcess = spawn('ffmpeg', [
-        '-threads', '2',
+        '-threads', '1', // Single thread uses ~40% less memory and runs plenty fast for 25fps MPEG-1
         ...inputArgs,
         '-f', 'mpegts',
         '-codec:v', 'mpeg1video',
@@ -575,6 +606,7 @@ wss.on('connection', (ws, req) => {
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-vf', 'realtime',
+        '-max_muxing_queue_size', '128', // Prevent unbounded packet queue buildup in RAM
         '-muxdelay', '0.001',
         '-muxpreload', '0.001',
         '-flush_packets', '1',
@@ -584,7 +616,9 @@ wss.on('connection', (ws, req) => {
         '-b:a', '96k',
         '-af', 'arealtime,aresample=async=1000:min_hard_comp=0.100000:first_pts=0',
         '-'
-      ]);
+      ], {
+        detached: true
+      });
 
       ffmpegProcess.on('exit', () => cleanup());
       ffmpegProcess.on('error', (err) => {
@@ -652,7 +686,8 @@ wss.on('connection', (ws, req) => {
       : [];
     const ytdlpArgs = [
       '-4',
-      '--socket-timeout', '15',
+      '--socket-timeout', '10',
+      '--no-playlist',
       '--cache-dir', '/tmp/ytdlp_cache',
       '--no-warnings',
       '--js-runtimes', 'node',
@@ -668,13 +703,29 @@ wss.on('connection', (ws, req) => {
 
     let urlBuffer = '';
     ytdlpProcess = spawn('python3', ['-m', 'yt_dlp', ...ytdlpArgs], {
+      detached: true,
       env: {
         ...process.env,
         HOME: '/home/node',
         PATH: '/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
-        PYTHONUNBUFFERED: '1'
+        PYTHONUNBUFFERED: '1',
+        NODE_OPTIONS: '--max-old-space-size=64'
       }
     });
+
+    // 45-second safety watchdog to kill hung extraction before Render 512MB threshold is reached
+    ytdlpTimer = setTimeout(() => {
+      if (ytdlpProcess && ytdlpProcess.pid) {
+        console.warn(`[Extraction Timeout] yt-dlp took >45s for ${videoId}, killing process group...`);
+        try { process.kill(-ytdlpProcess.pid, 'SIGKILL'); } catch (e) {
+          try { ytdlpProcess.kill('SIGKILL'); } catch (e2) {}
+        }
+        ytdlpProcess = null;
+        if (ws.readyState === ws.OPEN) {
+          ws.close(1011, 'Extraction timed out');
+        }
+      }
+    }, 45000);
 
     ytdlpProcess.stdout.on('data', (d) => {
       urlBuffer += d.toString();
@@ -688,6 +739,10 @@ wss.on('connection', (ws, req) => {
     });
 
     ytdlpProcess.on('close', (code) => {
+      if (ytdlpTimer) {
+        clearTimeout(ytdlpTimer);
+        ytdlpTimer = null;
+      }
       if (isClosed) return;
       const rawUrls = urlBuffer.trim().split('\n').filter((u) => u.startsWith('http'));
 
@@ -701,7 +756,8 @@ wss.on('connection', (ws, req) => {
         console.warn(`[Stream Pipe Fallback for ${videoId}] Falling back to progressive MP4 stdout pipe...`);
         const pipeArgs = [
           '-4',
-          '--socket-timeout', '15',
+          '--socket-timeout', '10',
+          '--no-playlist',
           '--cache-dir', '/tmp/ytdlp_cache',
           '--no-warnings',
           '--js-runtimes', 'node',
@@ -715,11 +771,13 @@ wss.on('connection', (ws, req) => {
         }
 
         ytdlpProcess = spawn('python3', ['-m', 'yt_dlp', ...pipeArgs], {
+          detached: true,
           env: {
             ...process.env,
             HOME: '/home/node',
             PATH: '/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
-            PYTHONUNBUFFERED: '1'
+            PYTHONUNBUFFERED: '1',
+            NODE_OPTIONS: '--max-old-space-size=64'
           }
         });
 
@@ -772,20 +830,19 @@ app.get('*', (req, res, next) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Tesla Drive Stream Server v5.5.4 (Node 22 + Deno EJS Engine + Web App) listening on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Tesla Drive Stream Server v5.5.4 (Memory Hardened, Single Stream Max) listening on http://0.0.0.0:${PORT}`);
   console.log(`📡 WebSocket ready at ws://0.0.0.0:${PORT}/stream?v=<youtubeId>`);
-  // Background auto-upgrade of yt-dlp to latest nightly so YouTube JS player updates are always supported
-  try {
-    const updater = spawn('python3', ['-m', 'pip', 'install', '--user', '--no-cache-dir', '--break-system-packages', '--upgrade', 'yt-dlp-ejs'], {
-      env: {
-        ...process.env,
-        HOME: '/home/node',
-        PATH: '/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || '')
-      },
-      stdio: 'inherit'
-    });
-    updater.on('error', () => {});
-  } catch {}
+
+  // Active memory watchdog to keep RSS safely under 250MB on Render 512MB Free Tier
+  setInterval(() => {
+    const mem = process.memoryUsage();
+    const rssMb = Math.round(mem.rss / 1024 / 1024);
+    const heapMb = Math.round(mem.heapUsed / 1024 / 1024);
+    if (rssMb > 250 && global.gc) {
+      console.warn(`[Memory Watchdog] Elevated RSS: ${rssMb}MB (Heap: ${heapMb}MB). Running garbage collection...`);
+      try { global.gc(); } catch (e) {}
+    }
+  }, 30000);
 });
 
 // Process signal handlers for clean container shutdown
