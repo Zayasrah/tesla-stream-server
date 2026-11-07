@@ -450,7 +450,7 @@ app.get('/health', (req, res) => {
     hasPotProvider: isPotServerHealthy,
     cachedStreamsCount: RESOLVED_URL_CACHE.size,
     uptime: process.uptime(),
-    version: '5.5.5-cached-stream-fastpath'
+    version: '5.6.0-timeline-seek-and-watch-history'
   });
 });
 
@@ -672,18 +672,27 @@ wss.on('connection', (ws, req) => {
   try {
     // Single-thread lightweight real-time MPEG-1 transcode profile strictly tuned for 512MB RAM
     const startFfmpeg = (inputArgs) => {
-      // Prepend -ss <seekSeconds> before each -i input argument for sub-second HTTP Range seeking
-      let processedInputArgs = inputArgs;
-      if (seekSeconds > 0 && !inputArgs.includes('pipe:0')) {
-        processedInputArgs = [];
-        for (const arg of inputArgs) {
-          if (arg === '-i') {
-            processedInputArgs.push('-ss', seekSeconds.toString(), '-i');
-          } else {
-            processedInputArgs.push(arg);
+      // Format input arguments: inject seek offset and HTTP reconnection flags
+      let processedInputArgs = [];
+      const hasReconnect = inputArgs.includes('-reconnect');
+      const isPipe = inputArgs.includes('pipe:0');
+
+      for (let i = 0; i < inputArgs.length; i++) {
+        const arg = inputArgs[i];
+        if (arg === '-i') {
+          if (seekSeconds > 0 && !isPipe) {
+            processedInputArgs.push('-ss', seekSeconds.toString());
           }
+          if (!hasReconnect && !isPipe) {
+            processedInputArgs.push('-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '2');
+          }
+          processedInputArgs.push('-i');
+        } else {
+          processedInputArgs.push(arg);
         }
-        console.log(`[FFmpeg Input Seek] Injected -ss ${seekSeconds}s before input stream(s)...`);
+      }
+      if (seekSeconds > 0 && !isPipe) {
+        console.log(`[FFmpeg Input Seek] Injected -ss ${seekSeconds}s with reconnect flags before input stream(s)...`);
       }
 
       ffmpegProcess = spawn('ffmpeg', [
@@ -880,6 +889,10 @@ wss.on('connection', (ws, req) => {
         if (hasCookies) {
           pipeArgs.splice(1, 0, '--cookies', COOKIES_PATH);
         }
+        if (seekSeconds > 0) {
+          pipeArgs.splice(1, 0, '--download-sections', `*${seekSeconds}-inf`);
+          console.log(`[Pipe Fallback Seek] Added --download-sections *${seekSeconds}-inf`);
+        }
 
         ytdlpProcess = spawn('python3', ['-m', 'yt_dlp', ...pipeArgs], {
           detached: true,
@@ -941,7 +954,7 @@ app.get('*', (req, res, next) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Tesla Drive Stream Server v5.5.4 (Memory Hardened, Single Stream Max) listening on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Tesla Drive Stream Server v5.6.0 (Timeline Seek & Watch History) listening on http://0.0.0.0:${PORT}`);
   console.log(`📡 WebSocket ready at ws://0.0.0.0:${PORT}/stream?v=<youtubeId>`);
 
   // Active memory watchdog to keep RSS safely under 250MB on Render 512MB Free Tier
