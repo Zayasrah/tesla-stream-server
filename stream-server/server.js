@@ -120,7 +120,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'Tesla In-Motion Canvas Video Stream Server',
-    version: '5.5.0-universal-cookie-extractor',
+    version: '5.5.1-embedded-challenge-solver',
     hasCookies: fs.existsSync(COOKIES_PATH),
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     activeStreams,
@@ -219,7 +219,7 @@ app.get('/health', (req, res) => {
     streamTelemetry: latestStreamTelemetry,
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     uptime: process.uptime(),
-    version: '5.5.0-universal-cookie-extractor'
+    version: '5.5.1-embedded-challenge-solver'
   });
 });
 
@@ -260,9 +260,6 @@ app.get('/diag', async (req, res) => {
       isFullAuthCookie = c.includes('LOGIN_INFO') || c.includes('__Secure-3PSID') || c.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length > 10;
     } catch {}
   }
-  const clientArg = isFullAuthCookie
-    ? 'youtube:player_client=tv,web_creator,mweb,web'
-    : 'youtube:player_client=tv,ios,android,mweb,web';
   const potArgs = fs.existsSync(POT_SCRIPT)
     ? [
         '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
@@ -274,7 +271,7 @@ app.get('/diag', async (req, res) => {
     '--socket-timeout', '10',
     '--no-cache-dir',
     '--no-warnings',
-    '--extractor-args', clientArg,
+    '--js-runtimes', 'node',
     ...potArgs,
     '-f', '18/b[ext=mp4]/b/bestvideo[height<=720]+bestaudio/best*',
     '-g',
@@ -488,9 +485,6 @@ wss.on('connection', (ws, req) => {
         isFullAuthCookie = c.includes('LOGIN_INFO') || c.includes('__Secure-3PSID') || c.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length > 10;
       } catch {}
     }
-    const clientArg = isFullAuthCookie
-      ? 'youtube:player_client=tv,web_creator,mweb,web'
-      : 'youtube:player_client=tv,ios,android,mweb,web';
     const potArgs = fs.existsSync(POT_SCRIPT)
       ? [
           '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
@@ -501,7 +495,7 @@ wss.on('connection', (ws, req) => {
       '--socket-timeout', '10',
       '--no-cache-dir',
       '--no-warnings',
-      '--extractor-args', clientArg,
+      '--js-runtimes', 'node',
       ...potArgs,
       '-f', '18/b[ext=mp4]/b/bestvideo[height<=720]+bestaudio/best*',
       '-g',
@@ -549,7 +543,7 @@ wss.on('connection', (ws, req) => {
           '--socket-timeout', '10',
           '--no-cache-dir',
           '--no-warnings',
-          '--extractor-args', clientArg,
+          '--js-runtimes', 'node',
           ...potArgs,
           '-f', '18/b[ext=mp4]/b/best*',
           '-o', '-',
@@ -598,11 +592,11 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Tesla Drive Stream Server v5.5.0 (Universal Cookie & TV Client Extractor) listening on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Tesla Drive Stream Server v5.5.1 (Embedded Node JS Challenge Solver) listening on http://0.0.0.0:${PORT}`);
   console.log(`📡 WebSocket ready at ws://0.0.0.0:${PORT}/stream?v=<youtubeId>`);
   // Background auto-upgrade of yt-dlp to latest nightly so YouTube JS player updates are always supported
   try {
-    const updater = spawn('python3', ['-m', 'pip', 'install', '--upgrade', '--pre', '--break-system-packages', 'yt-dlp[default,curl-cffi]'], {
+    const updater = spawn('python3', ['-m', 'pip', 'install', '--upgrade', '--pre', '--break-system-packages', 'yt-dlp[default,curl-cffi]', 'yt-dlp-ejs'], {
       stdio: 'ignore'
     });
     updater.on('error', () => {});
