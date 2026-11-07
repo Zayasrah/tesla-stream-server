@@ -608,8 +608,9 @@ wss.on('connection', (ws, req) => {
 
   activeStreams++;
   const requestedQuality = url.searchParams.get('q') || url.searchParams.get('quality') || '360p';
+  const seekSeconds = Math.max(0, parseFloat(url.searchParams.get('ss') || url.searchParams.get('t') || '0'));
   const profile = QUALITY_PROFILES[requestedQuality] || QUALITY_PROFILES['360p'];
-  console.log(`[Stream Started] Video: ${videoId} | Quality: ${requestedQuality} (${profile.resolution} @ ${profile.videoBitrate}) | Active Streams: ${activeStreams}`);
+  console.log(`[Stream Started] Video: ${videoId} | Quality: ${requestedQuality} | Seek: ${seekSeconds}s | Active Streams: ${activeStreams}`);
 
   let ytdlpProcess = null;
   let ffmpegProcess = null;
@@ -671,9 +672,23 @@ wss.on('connection', (ws, req) => {
   try {
     // Single-thread lightweight real-time MPEG-1 transcode profile strictly tuned for 512MB RAM
     const startFfmpeg = (inputArgs) => {
+      // Prepend -ss <seekSeconds> before each -i input argument for sub-second HTTP Range seeking
+      let processedInputArgs = inputArgs;
+      if (seekSeconds > 0 && !inputArgs.includes('pipe:0')) {
+        processedInputArgs = [];
+        for (const arg of inputArgs) {
+          if (arg === '-i') {
+            processedInputArgs.push('-ss', seekSeconds.toString(), '-i');
+          } else {
+            processedInputArgs.push(arg);
+          }
+        }
+        console.log(`[FFmpeg Input Seek] Injected -ss ${seekSeconds}s before input stream(s)...`);
+      }
+
       ffmpegProcess = spawn('ffmpeg', [
         '-threads', '1', // Single thread uses ~40% less memory and runs plenty fast for 25fps MPEG-1
-        ...inputArgs,
+        ...processedInputArgs,
         '-f', 'mpegts',
         '-codec:v', 'mpeg1video',
         '-s', profile.resolution,
