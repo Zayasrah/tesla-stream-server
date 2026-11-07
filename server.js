@@ -40,17 +40,27 @@ const DIRECT_STREAM_MAP = {
 
 // Launch BotGuard Proof-of-Origin Token (POT) server on port 4416
 let potServerProcess = null;
+let isPotServerHealthy = false;
+let potRestartAttempts = 0;
 const POT_SCRIPT = '/opt/bgutil-provider/build/main.js';
-if (fs.existsSync(POT_SCRIPT)) {
+
+function startPotProvider() {
+  if (!fs.existsSync(POT_SCRIPT)) {
+    console.log('ℹ️ POT provider script not found at', POT_SCRIPT, '(running in fallback mode)');
+    return;
+  }
   try {
-    console.log('🚀 Spawning BotGuard Proof-of-Origin Token daemon on 127.0.0.1:4416 (memory capped to 48MB)...');
-    potServerProcess = spawn('node', ['--max-old-space-size=48', POT_SCRIPT, '--host', '127.0.0.1', '--port', '4416'], {
+    console.log('🚀 Spawning BotGuard Proof-of-Origin Token daemon on 127.0.0.1:4416 (memory capped to 96MB)...');
+    potServerProcess = spawn('node', ['--max-old-space-size=96', POT_SCRIPT, '--host', '127.0.0.1', '--port', '4416'], {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
     potServerProcess.stdout.on('data', (d) => {
       const msg = d.toString().trim();
       if (msg) console.log('[POT Daemon]', msg);
+      if (msg.includes('Listening') || msg.includes('4416') || msg.includes('ready') || msg.includes('running')) {
+        isPotServerHealthy = true;
+      }
     });
     potServerProcess.stderr.on('data', (d) => {
       const msg = d.toString().trim();
@@ -58,12 +68,68 @@ if (fs.existsSync(POT_SCRIPT)) {
     });
     potServerProcess.on('exit', (code) => {
       console.warn(`[POT Daemon] Exited with code ${code}`);
+      isPotServerHealthy = false;
+      potServerProcess = null;
+      if (potRestartAttempts < 2) {
+        potRestartAttempts++;
+        console.log(`[POT Daemon] Auto-restarting in 4s (attempt ${potRestartAttempts}/2)...`);
+        setTimeout(startPotProvider, 4000);
+      }
     });
+
+    // Active health ping after 2.5s
+    setTimeout(async () => {
+      try {
+        const ping = await fetch('http://127.0.0.1:4416/ping', { signal: AbortSignal.timeout(1500) });
+        if (ping.ok || ping.status < 500) {
+          isPotServerHealthy = true;
+          console.log('✅ POT Daemon verified active and responsive on 127.0.0.1:4416');
+        }
+      } catch (e) {
+        try {
+          const ping2 = await fetch('http://127.0.0.1:4416/', { signal: AbortSignal.timeout(1500) });
+          if (ping2.ok || ping2.status < 500) {
+            isPotServerHealthy = true;
+            console.log('✅ POT Daemon verified active and responsive on 127.0.0.1:4416');
+          }
+        } catch (e2) {}
+      }
+    }, 2500);
+
   } catch (err) {
     console.error('Failed to spawn POT provider:', err.message);
   }
-} else {
-  console.log('ℹ️ POT provider script not found at', POT_SCRIPT, '(running in fallback mode)');
+}
+
+startPotProvider();
+
+// High-Performance In-Memory URL Cache for Zero-Wait Video Switching (3-Hour TTL)
+const RESOLVED_URL_CACHE = new Map(); // videoId -> { urls: string[], expiresAt: number }
+
+function getCachedStreamUrls(videoId) {
+  const cached = RESOLVED_URL_CACHE.get(videoId);
+  if (!cached) return null;
+  if (Date.now() > cached.expiresAt) {
+    RESOLVED_URL_CACHE.delete(videoId);
+    return null;
+  }
+  return cached.urls;
+}
+
+function cacheStreamUrls(videoId, urls) {
+  if (!urls || urls.length === 0) return;
+  let expiresAt = Date.now() + 3 * 3600 * 1000; // default 3 hours
+  const match = urls[0].match(/[?&]expire=(\d+)/);
+  if (match) {
+    const expireSec = parseInt(match[1], 10);
+    expiresAt = (expireSec * 1000) - (15 * 60 * 1000); // 15min safety margin
+  }
+  if (RESOLVED_URL_CACHE.size > 50) {
+    const oldestKey = RESOLVED_URL_CACHE.keys().next().value;
+    RESOLVED_URL_CACHE.delete(oldestKey);
+  }
+  RESOLVED_URL_CACHE.set(videoId, { urls, expiresAt });
+  console.log(`[Cache Stored] Video ${videoId} cached until ${new Date(expiresAt).toLocaleTimeString()}`);
 }
 
 // Multi-tier Quality Profiles calibrated for zero-drop real-time streaming on cloud vCPU
@@ -381,9 +447,10 @@ app.get('/health', (req, res) => {
     hasCookies: cookieExists,
     cookieStats,
     streamTelemetry: latestStreamTelemetry,
-    hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
+    hasPotProvider: isPotServerHealthy,
+    cachedStreamsCount: RESOLVED_URL_CACHE.size,
     uptime: process.uptime(),
-    version: '5.5.4-memory-hardened-single-stream'
+    version: '5.5.5-cached-stream-fastpath'
   });
 });
 
@@ -414,6 +481,20 @@ app.get('/diag', async (req, res) => {
     }
   }
 
+  // Fast-path: In-memory cached stream URL
+  const cachedUrls = getCachedStreamUrls(videoId);
+  if (cachedUrls && req.query.fresh !== '1') {
+    return res.json({
+      status: 'success',
+      type: 'cached_fastpath',
+      videoId,
+      hasCookies: fs.existsSync(COOKIES_PATH),
+      elapsedMs: Date.now() - start,
+      urlCount: cachedUrls.length,
+      sampleUrl: cachedUrls[0].substring(0, 80) + '...'
+    });
+  }
+
   // Otherwise test yt-dlp
   const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const hasCookies = fs.existsSync(COOKIES_PATH);
@@ -424,7 +505,7 @@ app.get('/diag', async (req, res) => {
       isFullAuthCookie = c.includes('LOGIN_INFO') || c.includes('__Secure-3PSID') || c.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length > 10;
     } catch {}
   }
-  const potArgs = (fs.existsSync(POT_SCRIPT) && req.query.nopot !== '1')
+  const potArgs = (isPotServerHealthy && req.query.nopot !== '1')
     ? [
         '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
       ]
@@ -478,6 +559,9 @@ app.get('/diag', async (req, res) => {
   ytdlp.on('close', (code) => {
     clearTimeout(timer);
     const urls = stdout.trim().split('\n').filter((u) => u.startsWith('http'));
+    if (code === 0 && urls.length > 0) {
+      cacheStreamUrls(videoId, urls);
+    }
     res.json({
       status: code === 0 && urls.length > 0 ? 'success' : 'failed',
       exitCode: code,
@@ -669,6 +753,17 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // Fast-path 2: If videoId stream is already cached in memory (Zero-wait start)
+    const cachedUrls = getCachedStreamUrls(videoId);
+    if (cachedUrls && cachedUrls.length > 0) {
+      console.log(`[Cached Stream Fast-Path] Starting instant transcode for ${videoId} from cached URLs (${cachedUrls.length})...`);
+      const inputArgs = cachedUrls.length >= 2
+        ? ['-i', cachedUrls[0], '-i', cachedUrls[1]]
+        : ['-i', cachedUrls[0]];
+      startFfmpeg(inputArgs);
+      return;
+    }
+
     // Standard YouTube path using yt-dlp with smart client selection
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const hasCookies = fs.existsSync(COOKIES_PATH);
@@ -679,7 +774,7 @@ wss.on('connection', (ws, req) => {
         isFullAuthCookie = c.includes('LOGIN_INFO') || c.includes('__Secure-3PSID') || c.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length > 10;
       } catch {}
     }
-    const potArgs = fs.existsSync(POT_SCRIPT)
+    const potArgs = isPotServerHealthy
       ? [
           '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
         ]
@@ -747,7 +842,8 @@ wss.on('connection', (ws, req) => {
       const rawUrls = urlBuffer.trim().split('\n').filter((u) => u.startsWith('http'));
 
       if (code === 0 && rawUrls.length > 0) {
-        console.log(`[Stream URL Resolved for ${videoId}] Starting direct HTTP transcode...`);
+        console.log(`[Stream URL Resolved for ${videoId}] Starting direct HTTP transcode & caching URL...`);
+        cacheStreamUrls(videoId, rawUrls);
         const inputArgs = rawUrls.length >= 2
           ? ['-i', rawUrls[0], '-i', rawUrls[1]]
           : ['-i', rawUrls[0]];
