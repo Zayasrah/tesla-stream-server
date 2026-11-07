@@ -120,7 +120,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'online',
     service: 'Tesla In-Motion Canvas Video Stream Server',
-    version: '5.5.1-embedded-challenge-solver',
+    version: '5.5.2-guaranteed-ejs-solver',
     hasCookies: fs.existsSync(COOKIES_PATH),
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     activeStreams,
@@ -219,7 +219,7 @@ app.get('/health', (req, res) => {
     streamTelemetry: latestStreamTelemetry,
     hasPotProvider: fs.existsSync(POT_SCRIPT) && !!potServerProcess && !potServerProcess.killed,
     uptime: process.uptime(),
-    version: '5.5.1-embedded-challenge-solver'
+    version: '5.5.2-guaranteed-ejs-solver'
   });
 });
 
@@ -260,10 +260,13 @@ app.get('/diag', async (req, res) => {
       isFullAuthCookie = c.includes('LOGIN_INFO') || c.includes('__Secure-3PSID') || c.split('\n').filter((l) => l.trim() && !l.startsWith('#')).length > 10;
     } catch {}
   }
-  const potArgs = fs.existsSync(POT_SCRIPT)
+  const potArgs = (fs.existsSync(POT_SCRIPT) && req.query.nopot !== '1')
     ? [
         '--extractor-args', 'youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416'
       ]
+    : [];
+  const clientArgs = req.query.client
+    ? ['--extractor-args', `youtube:player_client=${req.query.client}`]
     : [];
   const ytdlpArgs = [
     '-v',
@@ -273,19 +276,21 @@ app.get('/diag', async (req, res) => {
     '--no-warnings',
     '--js-runtimes', 'node',
     ...potArgs,
-    '-f', '18/b[ext=mp4]/b/bestvideo[height<=720]+bestaudio/best*',
+    ...clientArgs,
+    '-f', req.query.f || '18/b[ext=mp4]/b/bestvideo[height<=720]+bestaudio/best*',
     '-g',
     youtubeUrl
   ];
 
-  if (hasCookies) {
+  if (hasCookies && req.query.nocookies !== '1') {
     ytdlpArgs.splice(1, 0, '--cookies', COOKIES_PATH);
   }
 
   const ytdlp = spawn('python3', ['-m', 'yt_dlp', ...ytdlpArgs], {
     env: {
       ...process.env,
-      PATH: '/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
+      HOME: '/home/node',
+      PATH: '/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
       PYTHONUNBUFFERED: '1'
     }
   });
@@ -301,7 +306,7 @@ app.get('/diag', async (req, res) => {
     res.status(504).json({
       error: 'Timeout after 30s',
       stdout: stdout.slice(0, 1000),
-      stderr: stderr.slice(-1500),
+      stderr: stderr,
       elapsedMs: Date.now() - start
     });
   }, 30000);
@@ -316,7 +321,7 @@ app.get('/diag', async (req, res) => {
       elapsedMs: Date.now() - start,
       urlCount: urls.length,
       sampleUrl: urls.length > 0 ? urls[0].substring(0, 80) + '...' : null,
-      stderr: stderr.slice(-1500)
+      stderr: stderr
     });
   });
 
@@ -510,7 +515,8 @@ wss.on('connection', (ws, req) => {
     ytdlpProcess = spawn('python3', ['-m', 'yt_dlp', ...ytdlpArgs], {
       env: {
         ...process.env,
-        PATH: '/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
+        HOME: '/home/node',
+        PATH: '/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
         PYTHONUNBUFFERED: '1'
       }
     });
@@ -556,7 +562,8 @@ wss.on('connection', (ws, req) => {
         ytdlpProcess = spawn('python3', ['-m', 'yt_dlp', ...pipeArgs], {
           env: {
             ...process.env,
-            PATH: '/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
+            HOME: '/home/node',
+            PATH: '/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
             PYTHONUNBUFFERED: '1'
           }
         });
@@ -592,12 +599,17 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Tesla Drive Stream Server v5.5.1 (Embedded Node JS Challenge Solver) listening on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 Tesla Drive Stream Server v5.5.2 (Guaranteed EJS Node Challenge Solver) listening on http://0.0.0.0:${PORT}`);
   console.log(`📡 WebSocket ready at ws://0.0.0.0:${PORT}/stream?v=<youtubeId>`);
   // Background auto-upgrade of yt-dlp to latest nightly so YouTube JS player updates are always supported
   try {
-    const updater = spawn('python3', ['-m', 'pip', 'install', '--upgrade', '--pre', '--break-system-packages', 'yt-dlp[default,curl-cffi]', 'yt-dlp-ejs'], {
-      stdio: 'ignore'
+    const updater = spawn('python3', ['-m', 'pip', 'install', '--user', '--no-cache-dir', '--break-system-packages', '--upgrade', 'yt-dlp-ejs'], {
+      env: {
+        ...process.env,
+        HOME: '/home/node',
+        PATH: '/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || '')
+      },
+      stdio: 'inherit'
     });
     updater.on('error', () => {});
   } catch {}
