@@ -692,26 +692,54 @@ wss.on('connection', (ws, req) => {
   const seekSeconds = Math.max(0, parseFloat(url.searchParams.get('ss') || url.searchParams.get('t') || '0'));
   const baseProfile = QUALITY_PROFILES[requestedQuality] || QUALITY_PROFILES['360p'];
 
-  // Driver Stream Lab Custom Overrides (Sanitized for cloud stability and memory safety)
+  // Driver Stream Lab Custom Overrides (Strictly sanitized for cloud stability and memory safety)
+  const ALLOWED_RESOLUTIONS = ['640x360', '854x480', '960x540', '1280x720'];
   const customFps = url.searchParams.get('fps');
   const customBitrate = url.searchParams.get('bitrate') || url.searchParams.get('b');
   const customQmin = url.searchParams.get('qmin');
   const customQmax = url.searchParams.get('qmax');
   const customRes = url.searchParams.get('res');
 
+  let sanitizedResolution = baseProfile.resolution;
+  if (customRes && ALLOWED_RESOLUTIONS.includes(customRes)) {
+    sanitizedResolution = customRes;
+  }
+
+  let sanitizedBitrate = baseProfile.videoBitrate;
+  if (customBitrate && /^\d+k$/.test(customBitrate)) {
+    const kbps = parseInt(customBitrate, 10);
+    if (kbps >= 500 && kbps <= 3500) {
+      sanitizedBitrate = `${kbps}k`;
+    }
+  }
+
+  const numericBitrate = parseInt(sanitizedBitrate, 10);
+  const sanitizedMaxRate = `${Math.round(numericBitrate * 1.3)}k`;
+  const sanitizedBufSize = `${Math.round(numericBitrate * 1.8)}k`;
+  const sanitizedFps = (customFps && ['20', '24', '25', '30'].includes(customFps)) ? customFps : baseProfile.fps;
+
+  // Strict monotonic qmin <= qmax invariant to prevent FFmpeg immediate encoder abort
+  let parsedQmin = (customQmin && !isNaN(parseInt(customQmin, 10)))
+    ? Math.max(1, Math.min(10, parseInt(customQmin, 10)))
+    : parseInt(baseProfile.qmin, 10);
+
+  let parsedQmax = (customQmax && !isNaN(parseInt(customQmax, 10)))
+    ? Math.max(5, Math.min(30, parseInt(customQmax, 10)))
+    : parseInt(baseProfile.qmax, 10);
+
+  if (parsedQmin > parsedQmax) {
+    parsedQmax = parsedQmin;
+  }
+
   const profile = {
-    resolution: (customRes && /^\d+x\d+$/.test(customRes)) ? customRes : baseProfile.resolution,
-    videoBitrate: (customBitrate && /^\d+k$/.test(customBitrate)) ? customBitrate : baseProfile.videoBitrate,
-    maxRate: (customBitrate && /^\d+k$/.test(customBitrate))
-      ? `${Math.round(parseInt(customBitrate, 10) * 1.3)}k`
-      : baseProfile.maxRate,
-    bufSize: (customBitrate && /^\d+k$/.test(customBitrate))
-      ? `${Math.round(parseInt(customBitrate, 10) * 1.8)}k`
-      : baseProfile.bufSize,
-    fps: (customFps && ['20', '24', '25', '30'].includes(customFps)) ? customFps : baseProfile.fps,
-    gop: (customFps && ['20', '24', '25', '30'].includes(customFps)) ? customFps : baseProfile.gop,
-    qmin: (customQmin && !isNaN(parseInt(customQmin, 10))) ? Math.max(1, Math.min(10, parseInt(customQmin, 10))).toString() : baseProfile.qmin,
-    qmax: (customQmax && !isNaN(parseInt(customQmax, 10))) ? Math.max(5, Math.min(30, parseInt(customQmax, 10))).toString() : baseProfile.qmax,
+    resolution: sanitizedResolution,
+    videoBitrate: sanitizedBitrate,
+    maxRate: sanitizedMaxRate,
+    bufSize: sanitizedBufSize,
+    fps: sanitizedFps,
+    gop: sanitizedFps,
+    qmin: parsedQmin.toString(),
+    qmax: parsedQmax.toString(),
   };
   console.log(`[Stream Started] Video: ${videoId} | Quality: ${requestedQuality} (${profile.resolution}, ${profile.videoBitrate}, ${profile.fps}fps, qmin:${profile.qmin}, qmax:${profile.qmax}) | Seek: ${seekSeconds}s | Active Streams: ${activeStreams}`);
 
