@@ -156,33 +156,33 @@ const QUALITY_PROFILES = {
   },
   '540p': {
     resolution: '960x540',
-    videoBitrate: '1200k',
-    maxRate: '1600k',
-    bufSize: '2400k',
+    videoBitrate: '1000k',
+    maxRate: '1300k',
+    bufSize: '1800k',
     fps: '25',
     gop: '25',
-    qmin: '3',
-    qmax: '12'
+    qmin: '4',
+    qmax: '16'
   },
   '720p': {
     resolution: '1280x720',
-    videoBitrate: '1400k',
+    videoBitrate: '1100k',
+    maxRate: '1450k',
+    bufSize: '2000k',
+    fps: '25',
+    gop: '25',
+    qmin: '5',
+    qmax: '20'
+  },
+  '720p-pro': {
+    resolution: '1280x720',
+    videoBitrate: '1500k',
     maxRate: '1900k',
     bufSize: '2800k',
     fps: '25',
     gop: '25',
     qmin: '3',
     qmax: '14'
-  },
-  '720p-pro': {
-    resolution: '1280x720',
-    videoBitrate: '1850k',
-    maxRate: '2400k',
-    bufSize: '3600k',
-    fps: '25',
-    gop: '25',
-    qmin: '2',
-    qmax: '8'
   }
 };
 
@@ -684,6 +684,7 @@ app.get('/api/ffmpeg-test', (req, res) => {
     '-fps_mode', 'cfr',
     '-qmin', '3',
     '-qmax', '12',
+    '-bf', '0',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
     '-vf', 'realtime',
@@ -893,6 +894,7 @@ wss.on('connection', (ws, req) => {
         '-fps_mode', 'cfr',
         '-qmin', profile.qmin || '3',
         '-qmax', profile.qmax || '12',
+        '-bf', '0', // ABSOLUTELY MANDATORY FOR JSMPEG: progressive single-pass decoder requires zero B-frames to prevent stutter and cutting!
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-vf', 'realtime',
