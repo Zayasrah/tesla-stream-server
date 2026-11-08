@@ -687,11 +687,11 @@ app.get('/api/ffmpeg-test', (req, res) => {
     '-bf', '0',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
-    '-vf', 'realtime',
     '-codec:a', 'mp2',
     '-ar', '44100',
     '-ac', '2',
     '-b:a', '96k',
+    '-af', 'aresample=async=1000:min_hard_comp=0.100000:first_pts=0',
     '-t', '2',
     '-'
   ]);
@@ -897,7 +897,6 @@ wss.on('connection', (ws, req) => {
         '-bf', '0', // ABSOLUTELY MANDATORY FOR JSMPEG: progressive single-pass decoder requires zero B-frames to prevent stutter and cutting!
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
-        '-vf', 'realtime',
         '-max_muxing_queue_size', '128', // Prevent unbounded packet queue buildup in RAM
         '-muxdelay', '0.001',
         '-muxpreload', '0.001',
@@ -906,7 +905,7 @@ wss.on('connection', (ws, req) => {
         '-ar', '44100',
         '-ac', '2',
         '-b:a', '96k',
-        '-af', 'arealtime,aresample=async=1000:min_hard_comp=0.100000:first_pts=0',
+        '-af', 'aresample=async=1000:min_hard_comp=0.100000:first_pts=0',
         '-'
       ], {
         detached: true
