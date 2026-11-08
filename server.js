@@ -660,6 +660,58 @@ app.get('/diag', async (req, res) => {
   });
 });
 
+app.get('/api/ffmpeg-test', (req, res) => {
+  const testUrl = DIRECT_STREAM_MAP['eC4LfEVxvKg'];
+  let stderr = '';
+  let stdoutBytes = 0;
+  const ff = spawn('ffmpeg', [
+    '-threads', '1',
+    '-fflags', '+nobuffer+flush_packets+discardcorrupt',
+    '-flags', 'low_delay',
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '2',
+    '-i', testUrl,
+    '-f', 'mpegts',
+    '-codec:v', 'mpeg1video',
+    '-s', '640x360',
+    '-b:v', '600k',
+    '-maxrate', '850k',
+    '-bufsize', '1200k',
+    '-r', '25',
+    '-g', '25',
+    '-keyint_min', '25',
+    '-fps_mode', 'cfr',
+    '-qmin', '3',
+    '-qmax', '12',
+    '-preset', 'ultrafast',
+    '-tune', 'zerolatency',
+    '-vf', 'realtime',
+    '-codec:a', 'mp2',
+    '-ar', '44100',
+    '-ac', '2',
+    '-b:a', '96k',
+    '-t', '2',
+    '-'
+  ]);
+
+  const timer = setTimeout(() => {
+    try { ff.kill('SIGKILL'); } catch (e) {}
+    res.json({ status: 'timeout', stdoutBytes, stderr: stderr.slice(-1000) });
+  }, 10000);
+
+  ff.stdout.on('data', (c) => { stdoutBytes += c.length; });
+  ff.stderr.on('data', (d) => { stderr += d.toString(); });
+  ff.on('close', (code) => {
+    clearTimeout(timer);
+    res.json({ status: 'done', exitCode: code, stdoutBytes, stderr: stderr.slice(-1000) });
+  });
+  ff.on('error', (err) => {
+    clearTimeout(timer);
+    res.status(500).json({ error: err.message });
+  });
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
@@ -841,9 +893,6 @@ wss.on('connection', (ws, req) => {
         '-fps_mode', 'cfr',
         '-qmin', profile.qmin || '3',
         '-qmax', profile.qmax || '12',
-        '-trellis', '1',
-        '-flags', '+mv0',
-        '-bf', '0',
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-vf', 'realtime',
@@ -861,7 +910,13 @@ wss.on('connection', (ws, req) => {
         detached: true
       });
 
-      ffmpegProcess.on('exit', () => cleanup());
+      let ffmpegStderrBuffer = '';
+      ffmpegProcess.on('exit', (code, signal) => {
+        if (code !== 0 && code !== null) {
+          console.error(`[FFmpeg Error Exit ${code}] Video [${videoId}]:`, ffmpegStderrBuffer.slice(-1000));
+        }
+        cleanup();
+      });
       ffmpegProcess.on('error', (err) => {
         console.error(`ffmpeg spawn error [${videoId}]:`, err.message);
         cleanup();
@@ -870,6 +925,9 @@ wss.on('connection', (ws, req) => {
       // Capture real-time encoding speed and fps telemetry
       ffmpegProcess.stderr.on('data', (d) => {
         const text = d.toString();
+        if (ffmpegStderrBuffer.length < 4000) {
+          ffmpegStderrBuffer += text;
+        }
         const speedMatch = text.match(/speed=\s*([\d.]+x)/);
         const fpsMatch = text.match(/fps=\s*([\d.]+)/);
         const bitrateMatch = text.match(/bitrate=\s*([\d.]+\w+)/);
